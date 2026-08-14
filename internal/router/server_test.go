@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samgw/linguine/internal/audit"
 	"github.com/samgw/linguine/internal/auth"
 	"github.com/samgw/linguine/internal/config"
 	"github.com/samgw/linguine/internal/engine"
@@ -33,6 +35,7 @@ type testHarness struct {
 	signer      *auth.Signer
 	keys        *auth.APIKeyRepo
 	enrollments *auth.EnrollmentRepo
+	db          *sql.DB
 	key         string // raw API key
 	nngAddr     string
 }
@@ -64,6 +67,8 @@ func setup(t *testing.T, staleAfter time.Duration) *testHarness {
 		Signer:       signer,
 		Keys:         keys,
 		Enrollments:  enrollments,
+		Audit:        audit.NewRepo(db, 256),
+		DB:           db,
 		HTTPListen:   "127.0.0.1:0",
 		TLS:          config.TLSFiles{},
 		StaleAfter:    staleAfter,
@@ -74,7 +79,7 @@ func setup(t *testing.T, staleAfter time.Duration) *testHarness {
 		t.Fatalf("create api key: %v", err)
 	}
 	return &testHarness{
-		server: srv, signer: signer, keys: keys, enrollments: enrollments,
+		server: srv, signer: signer, keys: keys, enrollments: enrollments, db: db,
 		key: raw, nngAddr: addr,
 	}
 }

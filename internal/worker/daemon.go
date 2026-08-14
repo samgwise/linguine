@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"go.nanomsg.org/mangos/v3"
 
+	"github.com/samgw/linguine/internal/catalog"
 	"github.com/samgw/linguine/internal/engine"
 	"github.com/samgw/linguine/internal/mesh"
 	"github.com/samgw/linguine/internal/protocol"
@@ -25,11 +27,13 @@ const DefaultHeartbeatInterval = 5 * time.Second
 type Daemon struct {
 	mesh              *mesh.Worker
 	engine            engine.Engine
+	probe             *catalog.Probe
 	routerAddr        string
 	nodeID            string
 	enrollmentToken   string
 	activeModel       string
 	heartbeatInterval time.Duration
+	activeRequests     atomic.Int64
 }
 
 // Option configures a Daemon.
@@ -43,6 +47,12 @@ func WithHeartbeatInterval(d time.Duration) Option {
 // WithActiveModel sets the model label advertised in heartbeats.
 func WithActiveModel(m string) Option {
 	return func(dn *Daemon) { dn.activeModel = m }
+}
+
+// WithProbe attaches a catalog probe so heartbeats advertise the engine's
+// current /v1/models catalog. nil leaves the catalog empty.
+func WithProbe(p *catalog.Probe) Option {
+	return func(dn *Daemon) { dn.probe = p }
 }
 
 // NewDaemon creates a worker daemon. The NNG socket is created here.
@@ -123,6 +133,18 @@ func (d *Daemon) sendHeartbeat() {
 		NodeID:          d.nodeID,
 		EnrollmentToken: d.enrollmentToken,
 		ActiveModel:     d.activeModel,
+		ActiveRequests:    int(d.activeRequests.Load()),
+		// VRAM/TPS are best-effort: proxy engines don't expose them
+		// consistently, so 1a leaves them zero. Phase 1b/2 populates them
+		// from a managed engine's telemetry.
+	}
+	if d.probe != nil {
+		if catalog, _ := d.probe.Current(); catalog != nil {
+			hb.Catalog = catalog
+			if hb.ActiveModel == "" && len(catalog) > 0 {
+				hb.ActiveModel = catalog[0]
+			}
+		}
 	}
 	payload, err := json.Marshal(hb)
 	if err != nil {
@@ -135,6 +157,8 @@ func (d *Daemon) sendHeartbeat() {
 }
 
 func (d *Daemon) handleJob(ctx context.Context, backtrace []byte, env *protocol.Envelope) {
+	d.activeRequests.Add(1)
+	defer d.activeRequests.Add(-1)
 	body, err := d.engine.Proxy(ctx, env.Payload)
 	if err != nil {
 		d.sendFrame(backtrace, env.ReqID, &protocol.Frame{Type: protocol.FrameTypeError, Payload: []byte(err.Error())})

@@ -9,8 +9,10 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
+	"github.com/samgw/linguine/internal/catalog"
 	"github.com/samgw/linguine/internal/config"
 	"github.com/samgw/linguine/internal/engine"
 	"github.com/samgw/linguine/internal/worker"
@@ -29,7 +31,13 @@ func main() {
 	defer stop()
 
 	eng := engine.NewProxyEngine(cfg.Engine.URL)
-	d, err := worker.NewDaemon(cfg.Router.NNGAddr, cfg.NodeID, cfg.EnrollmentToken, eng)
+	// The catalog probe needs the engine base URL (it appends /v1/models);
+	// strip the /v1/chat/completions suffix from the configured engine URL.
+	baseURL := strings.TrimSuffix(cfg.Engine.URL, "/v1/chat/completions")
+	probe := catalog.NewProbe(baseURL)
+	go probe.Run(ctx)
+	d, err := worker.NewDaemon(cfg.Router.NNGAddr, cfg.NodeID, cfg.EnrollmentToken, eng,
+		worker.WithProbe(probe))
 	if err != nil {
 		log.Fatalf("create daemon: %v", err)
 	}

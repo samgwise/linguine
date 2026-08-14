@@ -4,9 +4,10 @@
 //
 // This file is the single source of truth for the database schema. It stays
 // in sync with the implemented migrations in internal/store/migrations/*.sql.
-// Phase 0 implements only the tables below; node model catalogs, aliases,
-// swap logs, audit logs, sessions and capability profiles arrive in later
-// phases and are added here when their migrations land.
+// Phase 0 implemented auth + node inventory; Phase 1a adds the node model
+// catalog and request audit log. Swap logs, aliases, sessions, KV-cache stats
+// and capability profiles arrive in later phases and are added here when their
+// migrations land.
 // ============================================================================
 
 Project linguine {
@@ -51,9 +52,46 @@ Table nodes {
   token_id       text [not null, ref: > node_enrollment_tokens.id, note: 'Enrollment token used during handshake']
   status         text [not null, default: `'offline'`', note: 'Enum: online, offline']
   remote_addr    text [note: 'Outbound address seen by the router']
+  active_model    text [note: 'Last-known loaded model, refreshed on heartbeat']
   last_heartbeat datetime [note: 'Timestamp of the last received heartbeat']
   created_at     datetime [not null, default: `CURRENT_TIMESTAMP`]
   updated_at     datetime [not null, default: `CURRENT_TIMESTAMP`]
 
-  Note: 'Connected worker nodes. Enriched with model catalog and live telemetry in Phase 1a.'
+  Note: 'Connected worker nodes. Volatile telemetry (VRAM, TPS, active_requests) stays in-memory in the router; only active_model + last_heartbeat persist for post-restart dashboard state.'
+}
+
+Table node_model_catalogs {
+  id              integer [pk, increment]
+  node_id          text [not null, ref: > nodes.id, note: 'Cascade delete when node is removed']
+  model_name       text [not null, note: 'Model id advertised by the engine /v1/models endpoint']
+  file_size_bytes  integer [note: 'Size on disk for load-time estimation; nullable in Phase 1a']
+  last_scanned_at  datetime [not null, default: `CURRENT_TIMESTAMP`]
+
+  indexes {
+    (node_id, model_name) [unique]
+  }
+
+  Note: 'Catalog of models each worker can serve, probed from the local engine. Kept in sync by the router on heartbeat.'
+}
+
+// ----------------------------------------------------------------------------
+// Request audit & usage metrics
+// ----------------------------------------------------------------------------
+
+Table request_audit_logs {
+  id                 integer [pk, increment]
+  api_key_id         text [ref: > api_keys.id, note: 'Nullable for unauthenticated internal requests']
+  node_id            text [ref: > nodes.id, note: 'Worker node that served the inference']
+  model_requested    text [not null]
+  model_served       text [not null]
+  prompt_tokens      integer [default: 0]
+  completion_tokens  integer [default: 0]
+  ttft_ms            integer [note: 'Time To First Token in milliseconds']
+  total_duration_ms  integer [note: 'Total duration of request']
+  was_streamed        boolean [not null, default: false]
+  was_model_swapped  boolean [not null, default: false]
+  status_code        integer [not null, default: 200]
+  created_at         datetime [not null, default: `CURRENT_TIMESTAMP`]
+
+  Note: 'Audit and usage history for dashboard charts and rate limiting. Written async so the /v1 hot path never blocks on SQLite.'
 }

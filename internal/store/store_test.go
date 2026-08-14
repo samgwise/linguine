@@ -40,7 +40,7 @@ CREATE INDEX i ON t(id);`
 
 func TestMigrationsCreateExpectedTables(t *testing.T) {
 	s := openTestStore(t)
-	want := []string{"api_keys", "node_enrollment_tokens", "nodes", "schema_migrations"}
+	want := []string{"api_keys", "node_enrollment_tokens", "nodes", "node_model_catalogs", "request_audit_logs", "schema_migrations"}
 
 	rows, err := s.DB().QueryContext(context.Background(),
 		`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
@@ -98,8 +98,8 @@ func TestMigrationsIdempotent(t *testing.T) {
 		`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count after first open: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("migration count after first open: got %d, want 1", count)
+	if count != 2 {
+		t.Fatalf("migration count after first open: got %d, want 2", count)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
@@ -114,8 +114,8 @@ func TestMigrationsIdempotent(t *testing.T) {
 		`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count after second open: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("migration count after second open: got %d, want 1 (re-applied)", count)
+	if count != 2 {
+		t.Errorf("migration count after second open: got %d, want 2 (re-applied)", count)
 	}
 }
 
@@ -127,7 +127,9 @@ func TestMigrationsExpectedColumns(t *testing.T) {
 	}{
 		{"api_keys", []string{"id", "name", "token_hash", "prefix", "role", "status", "expires_at", "created_at", "updated_at"}},
 		{"node_enrollment_tokens", []string{"id", "node_name", "status", "expires_at", "created_at"}},
-		{"nodes", []string{"id", "token_id", "status", "remote_addr", "last_heartbeat", "created_at", "updated_at"}},
+		{"nodes", []string{"id", "token_id", "status", "remote_addr", "active_model", "last_heartbeat", "created_at", "updated_at"}},
+		{"node_model_catalogs", []string{"id", "node_id", "model_name", "file_size_bytes", "last_scanned_at"}},
+		{"request_audit_logs", []string{"id", "api_key_id", "node_id", "model_requested", "model_served", "prompt_tokens", "completion_tokens", "ttft_ms", "total_duration_ms", "was_streamed", "was_model_swapped", "status_code", "created_at"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.table, func(t *testing.T) {

@@ -39,12 +39,21 @@ type NNGConfig struct {
 	TLS    TLSFiles `toml:"tls"`
 }
 
+// AdminConfig is the admin dashboard's configuration. The dashboard
+// runs on a separate localhost-only listener for a reverse proxy to
+// terminate TLS in front of.
+type AdminConfig struct {
+	Listen            string `toml:"listen"`
+	SessionSecretPath string `toml:"session_secret_path"`
+}
+
 // RouterConfig is the central router's configuration.
 type RouterConfig struct {
 	HTTP   HTTPConfig   `toml:"http"`
 	DB     DBConfig     `toml:"db"`
 	Signer SignerConfig `toml:"signer"`
 	NNG    NNGConfig    `toml:"nng"`
+	Admin  AdminConfig  `toml:"admin"`
 }
 
 func defaultRouterConfig() *RouterConfig {
@@ -61,6 +70,11 @@ func defaultRouterConfig() *RouterConfig {
 			// Plain TCP by default for local dev; production sets tls+tcp://
 			// with cert/key so worker dial-out traffic is encrypted.
 			Listen: "tcp://127.0.0.1:9000",
+		},
+		Admin: AdminConfig{
+			// Localhost-only, plain HTTP; a reverse proxy terminates TLS.
+			Listen:            "127.0.0.1:8444",
+			SessionSecretPath: "linguine-admin.key",
 		},
 	}
 }
@@ -107,6 +121,8 @@ func applyRouterEnv(c *RouterConfig) {
 	envStr("LINGUINE_ROUTER_NNG_TLS_CERT", &c.NNG.TLS.CertFile)
 	envStr("LINGUINE_ROUTER_NNG_TLS_KEY", &c.NNG.TLS.KeyFile)
 	envStr("LINGUINE_ROUTER_NNG_TLS_CA", &c.NNG.TLS.CAFile)
+	envStr("LINGUINE_ROUTER_ADMIN_LISTEN", &c.Admin.Listen)
+	envStr("LINGUINE_ROUTER_ADMIN_SESSION_SECRET_PATH", &c.Admin.SessionSecretPath)
 }
 
 // WorkerRouterConfig is the worker's view of the central router.

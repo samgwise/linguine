@@ -18,6 +18,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	adminpkg "github.com/samgw/linguine/internal/admin"
+	"github.com/samgw/linguine/internal/audit"
 	"github.com/samgw/linguine/internal/auth"
 	"github.com/samgw/linguine/internal/config"
 	"github.com/samgw/linguine/internal/mesh"
@@ -83,6 +85,9 @@ func serve(configPath string) error {
 		return fmt.Errorf("load signer: %w", err)
 	}
 
+	auditRepo := audit.NewRepo(st.DB(), 256)
+	defer auditRepo.Close()
+
 	nng, err := mesh.NewRouter()
 	if err != nil {
 		return fmt.Errorf("create mesh router: %w", err)
@@ -97,6 +102,8 @@ func serve(configPath string) error {
 		Signer:      signer,
 		Keys:        auth.NewAPIKeyRepo(st.DB()),
 		Enrollments: auth.NewEnrollmentRepo(st.DB(), signer),
+		Audit:       auditRepo,
+		DB:          st.DB(),
 		HTTPListen:  cfg.HTTP.Listen,
 		TLS:         cfg.HTTP.TLS,
 	})
@@ -105,6 +112,23 @@ func serve(configPath string) error {
 		return fmt.Errorf("start router: %w", err)
 	}
 	log.Printf("[linguine] router HTTP on %s, mesh on %s", ln.Addr(), cfg.NNG.Listen)
+
+	secret, err := adminpkg.LoadOrCreateSessionSecret(cfg.Admin.SessionSecretPath)
+	if err != nil {
+		return fmt.Errorf("load admin session secret: %w", err)
+	}
+	adminSrv := adminpkg.New(adminpkg.Deps{
+		Keys:         auth.NewAPIKeyRepo(st.DB()),
+		Audit:        auditRepo,
+		Nodes:        srv.NodesSnapshot,
+		Listen:       cfg.Admin.Listen,
+		SessionSecret: secret,
+	})
+	adminLn, err := adminSrv.Start()
+	if err != nil {
+		return fmt.Errorf("start admin: %w", err)
+	}
+	log.Printf("[linguine] admin HTTP on %s", adminLn.Addr())
 
 	<-ctx.Done()
 	log.Printf("[linguine] shutting down...")
@@ -128,11 +152,17 @@ func admin(configPath string, args []string) error {
 func adminCreateKey(configPath string, args []string) error {
 	fs := flag.NewFlagSet("admin create-key", flag.ExitOnError)
 	name := fs.String("name", "", "human-readable label for the API key")
+	role := fs.String("role", "client", "key role: client or admin")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *name == "" {
 		return fmt.Errorf("--name is required")
+	}
+	switch *role {
+	case "client", "admin":
+	default:
+		return fmt.Errorf("--role must be client or admin, got %q", *role)
 	}
 	cfg, err := config.LoadRouter(configPath)
 	if err != nil {
@@ -150,7 +180,12 @@ func adminCreateKey(configPath string, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create api key: %w", err)
 	}
-	fmt.Printf("API key (shown once — store it securely):\n  %s\nid:    %s\nname:  %s\n", raw, ak.ID, ak.Name)
+	if *role == "admin" {
+		if _, err := st.DB().Exec(`UPDATE api_keys SET role = 'admin' WHERE id = ?`, ak.ID); err != nil {
+			return fmt.Errorf("set admin role: %w", err)
+		}
+	}
+	fmt.Printf("API key (shown once — store it securely):\n  %s\nid:    %s\nname:  %s\nrole:  %s\n", raw, ak.ID, ak.Name, *role)
 	return nil
 }
 
