@@ -1,0 +1,59 @@
+// ============================================================================
+// Project: linguine — local lab inference control plane
+// Database: SQLite (modernc.org/sqlite, CGO-free, WAL mode)
+//
+// This file is the single source of truth for the database schema. It stays
+// in sync with the implemented migrations in internal/store/migrations/*.sql.
+// Phase 0 implements only the tables below; node model catalogs, aliases,
+// swap logs, audit logs, sessions and capability profiles arrive in later
+// phases and are added here when their migrations land.
+// ============================================================================
+
+Project linguine {
+  database_type: 'SQLite'
+  Note: 'Linguine control-plane schema. Kept in sync with internal/store/migrations/*.sql.'
+}
+
+// ----------------------------------------------------------------------------
+// Authentication & access control
+// ----------------------------------------------------------------------------
+
+Table api_keys {
+  id          text [pk, not null, note: 'KSUID/UUIDv4']
+  name        text [not null, note: 'Human-readable label (e.g. "Production App Key")']
+  token_hash  text [not null, unique, note: 'Argon2id hash of the client API key']
+  prefix      text [not null, note: 'Leading characters for display/identification']
+  role        text [not null, default: `'client'`', note: 'Enum: client, admin']
+  status      text [not null, default: `'active'`', note: 'Enum: active, revoked, expired']
+  expires_at  datetime [note: 'NULL for non-expiring keys']
+  created_at  datetime [not null, default: `CURRENT_TIMESTAMP`]
+  updated_at  datetime [not null, default: `CURRENT_TIMESTAMP`]
+
+  Note: 'Client credentials authorising requests against the OpenAI-compatible /v1 endpoints'
+}
+
+Table node_enrollment_tokens {
+  id          text [pk, not null, note: 'PASETO jti; the raw bearer token is issued once and verified by signature, not stored here']
+  node_name   text [not null, note: 'Expected hostname or identification label']
+  status      text [not null, default: `'active'`', note: 'Enum: active, revoked, expired']
+  expires_at  datetime [note: 'NULL for non-expiring tokens']
+  created_at  datetime [not null, default: `CURRENT_TIMESTAMP`]
+
+  Note: 'Worker onboarding tokens. The raw PASETO is shown to the operator once at creation; revocation flips status to revoked.'
+}
+
+// ----------------------------------------------------------------------------
+// Node inventory
+// ----------------------------------------------------------------------------
+
+Table nodes {
+  id             text [pk, not null, note: 'Assigned node identifier (e.g. "node-gpu-melbourne")']
+  token_id       text [not null, ref: > node_enrollment_tokens.id, note: 'Enrollment token used during handshake']
+  status         text [not null, default: `'offline'`', note: 'Enum: online, offline']
+  remote_addr    text [note: 'Outbound address seen by the router']
+  last_heartbeat datetime [note: 'Timestamp of the last received heartbeat']
+  created_at     datetime [not null, default: `CURRENT_TIMESTAMP`]
+  updated_at     datetime [not null, default: `CURRENT_TIMESTAMP`]
+
+  Note: 'Connected worker nodes. Enriched with model catalog and live telemetry in Phase 1a.'
+}
