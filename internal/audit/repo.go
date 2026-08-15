@@ -212,3 +212,61 @@ func nullableInt(n int) any {
 
 // ErrClosed is returned by Record/Recent after Close.
 var ErrClosed = errors.New("audit: repo closed")
+
+// AdminEvent is one admin dashboard auth event (login attempt, throttling).
+// Unlike request Audit entries, admin events are written synchronously:
+// admin login is low frequency and does not share the /v1 hot path's
+// backpressure constraints.
+type AdminEvent struct {
+	ID         int64
+	Event      string // login_failed | login_throttled | login_ok
+	APIKeyID   string
+	RemoteIP   string
+	StatusCode int
+	CreatedAt  time.Time
+}
+
+// RecordAdminEvent synchronously inserts an admin auth event. It returns an
+// error rather than dropping: a failed admin-event write should surface to the
+// caller (the login handler) rather than vanish, since these events drive
+// intrusion detection.
+func (r *Repo) RecordAdminEvent(e AdminEvent) error {
+	if _, err := r.db.Exec(
+		`INSERT INTO admin_audit_logs (event, api_key_id, remote_ip, status_code) VALUES (?, ?, ?, ?)`,
+		e.Event, nullable(e.APIKeyID), nullable(e.RemoteIP), e.StatusCode,
+	); err != nil {
+		return fmt.Errorf("audit: insert admin event: %w", err)
+	}
+	return nil
+}
+
+// RecentAdminEvents returns up to limit most-recent admin auth events, newest
+// first. It reads directly from SQLite so it reflects committed state.
+func (r *Repo) RecentAdminEvents(ctx context.Context, limit int) ([]AdminEvent, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, event, api_key_id, remote_ip, status_code, created_at
+		 FROM admin_audit_logs ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("audit: query admin events: %w", err)
+	}
+	defer rows.Close()
+	var out []AdminEvent
+	for rows.Next() {
+		var e AdminEvent
+		var apiKeyID, remoteIP sql.NullString
+		var created sql.NullTime
+		if err := rows.Scan(&e.ID, &e.Event, &apiKeyID, &remoteIP, &e.StatusCode, &created); err != nil {
+			return nil, fmt.Errorf("audit: scan admin event: %w", err)
+		}
+		e.APIKeyID = apiKeyID.String
+		e.RemoteIP = remoteIP.String
+		if created.Valid {
+			e.CreatedAt = created.Time
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}

@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"fmt"
 	"html/template"
 	"strings"
 	"time"
@@ -10,19 +9,35 @@ import (
 	"github.com/samgw/linguine/internal/fleet"
 )
 
-// tmpl is the parsed, embedded HTML template set. Pages are rendered with
-// html/template (stdlib) so no external code generator is needed.
-var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
-	"fmtTime":  func(t time.Time) string { return t.Format(time.RFC3339) },
+// All dynamic dashboard pages render through html/template with structured
+// data so the templating engine applies context-aware auto-escaping. The
+// earlier design built page bodies with fmt.Sprintf and injected them via
+// template.HTML, which disabled escaping and let attacker-controlled fields
+// (a client's requested model on the audit page; a worker's active model or
+// catalog on the node pages) execute script in the admin's session. This
+// file is the fix for that stored-XSS vector.
+//
+// Templates use the stdlib html/template rather than templ so the build stays
+// pure-Go with no external code generator required.
+
+var funcMap = template.FuncMap{
+	"fmtTime": func(t time.Time) string { return t.Format(time.RFC3339) },
 	"join":    func(xs []string) string { return strings.Join(xs, ", ") },
 	"lower":   strings.ToLower,
-}).Parse(`{{define "base"}}<!DOCTYPE html>
+	"orDash":  orDash,
+	"shortID": shortID,
+}
+
+// baseSource is the shared page chrome. Each page defines a "content" block
+// that the chrome renders via {{template "content" .}}. htmx is vendored and
+// served locally (see static.go) so the page never loads third-party script.
+const baseSource = `{{define "base"}}<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>{{.Title}} — linguine admin</title>
-<script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script>
+<script src="/admin/static/htmx.min.js"></script>
 <style>
 body { font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; color: #1f2328; background: #f6f8fa; }
 header { background: #24292f; color: #fff; padding: 12px 24px; display: flex; gap: 20px; align-items: center; }
@@ -61,97 +76,98 @@ a { color: #0969da; }
 <form method="post" action="/admin/logout" style="display:inline"><button type="submit" style="background:#636c76">Sign out</button></form>
 </header>
 <main>
-{{.Body}}
+{{template "content" .}}
 </main>
 </body>
-</html>{{end}}`))
+</html>{{end}}`
 
-func renderPage(title, body string) string {
+// base is the parsed chrome. Pages clone it and add their own "content" block.
+var base = template.Must(template.New("base").Funcs(funcMap).Parse(baseSource))
+
+// mustPage clones the chrome and parses a page's content block, panicking on a
+// parse error (page sources are compile-time constants).
+func mustPage(contentSrc string) *template.Template {
+	return template.Must(template.Must(base.Clone()).Parse(contentSrc))
+}
+
+var (
+	homeTmpl       = mustPage(homeSource)
+	nodesTmpl      = mustPage(nodesSource)
+	nodeDetailTmpl = mustPage(nodeDetailSource)
+	auditTmpl      = mustPage(auditSource)
+	loginTmpl      = mustPage(loginSource)
+)
+
+func renderPage(tmpl *template.Template, data any) string {
 	var b strings.Builder
-	if err := tmpl.ExecuteTemplate(&b, "base", map[string]any{"Title": title, "Body": template.HTML(body)}); err != nil {
+	if err := tmpl.ExecuteTemplate(&b, "base", data); err != nil {
 		return "admin: render error: " + err.Error()
 	}
 	return b.String()
 }
 
+// pageData carries the title shared by every page's chrome.
+type pageData struct {
+	Title string
+}
+
 func loginPage() string {
-	body := `<h1>Sign in</h1>
-<form method="post" action="/admin/login">
-<label>Admin API key <input type="password" name="password" placeholder="sk-mesh-…" autofocus/></label>
-<button type="submit">Sign in</button>
-</form>
-<p class="muted">Use <code>linguine admin create-key --name &lt;label&gt; --role admin</code> to create an admin key.</p>`
-	return renderPage("Sign in", body)
+	return renderPage(loginTmpl, pageData{Title: "Sign in"})
+}
+
+// homeData is the structured payload for the dashboard home page.
+type homeData struct {
+	pageData
+	Nodes   []fleet.NodeView
+	Online  int
+	Total   int
+	Offline int
 }
 
 func homePage(nodes []fleet.NodeView, online int) string {
-	body := fmt.Sprintf(`<div class="metrics">
-<div class="metric"><div class="v">%d</div><div class="l">Nodes total</div></div>
-<div class="metric"><div class="v">%d</div><div class="l">Online</div></div>
-<div class="metric"><div class="v">%d</div><div class="l">Offline / stale</div></div>
-</div>
-<h2>Fleet</h2>
-<table><thead><tr><th>Node</th><th>Status</th><th>Active model</th><th>Active requests</th><th>Last heartbeat</th></tr></thead><tbody>`,
-		len(nodes), online, len(nodes)-online)
-	if len(nodes) == 0 {
-		body += `<tr><td colspan="5" class="muted">No workers enrolled.</td></tr>`
-	}
-	for _, n := range nodes {
-		body += fmt.Sprintf(`<tr><td><a href="/admin/nodes/%s">%s</a></td><td><span class="status %s">%s</span></td><td>%s</td><td>%d</td><td>%s</td></tr>`,
-			n.ID, n.ID, strings.ToLower(n.Status), n.Status, orDash(n.ActiveModel), n.ActiveRequests, n.LastHeartbeat.Format(time.RFC3339))
-	}
-	body += `</tbody></table>`
-	return renderPage("Dashboard", body)
+	return renderPage(homeTmpl, homeData{
+		pageData: pageData{Title: "Dashboard"},
+		Nodes:    nodes,
+		Online:   online,
+		Total:    len(nodes),
+		Offline:  len(nodes) - online,
+	})
+}
+
+// nodesData is the structured payload for the node inventory page.
+type nodesData struct {
+	pageData
+	Nodes []fleet.NodeView
 }
 
 func nodesPage(nodes []fleet.NodeView) string {
-	body := `<h1>Node inventory</h1>
-<table hx-trigger="every 5s" hx-get="/admin/nodes" hx-target="this" hx-swap="outerHTML"><thead><tr><th>Node</th><th>Status</th><th>Active model</th><th>VRAM free / total (MB)</th><th>Active reqs</th><th>Est. TPS</th><th>Catalog</th><th>Last heartbeat</th></tr></thead><tbody>`
-	if len(nodes) == 0 {
-		body += `<tr><td colspan="8" class="muted">No workers enrolled.</td></tr>`
-	}
-	for _, n := range nodes {
-		body += fmt.Sprintf(`<tr><td><a href="/admin/nodes/%s">%s</a></td><td><span class="status %s">%s</span></td><td>%s</td><td>%d / %d</td><td>%d</td><td>%.1f</td><td>%s</td><td>%s</td></tr>`,
-			n.ID, n.ID, strings.ToLower(n.Status), n.Status, orDash(n.ActiveModel),
-			n.VRAMFreeMB, n.VRAMTotalMB, n.ActiveRequests, n.EstimatedTPS,
-			strings.Join(n.Catalog, ", "), n.LastHeartbeat.Format(time.RFC3339))
-	}
-	body += `</tbody></table>`
-	return renderPage("Nodes", body)
+	return renderPage(nodesTmpl, nodesData{pageData: pageData{Title: "Nodes"}, Nodes: nodes})
+}
+
+// nodeDetailData is the structured payload for a single node's detail page.
+type nodeDetailData struct {
+	pageData
+	N fleet.NodeView
 }
 
 func nodeDetailPage(n fleet.NodeView) string {
-	body := fmt.Sprintf(`<h1>%s</h1>
-<div class="card"><h2>State</h2>
-<table><tbody>
-<tr><th>Status</th><td><span class="status %s">%s</span></td></tr>
-<tr><th>Active model</th><td>%s</td></tr>
-<tr><th>VRAM free / total (MB)</th><td>%d / %d</td></tr>
-<tr><th>Active requests</th><td>%d</td></tr>
-<tr><th>Estimated TPS</th><td>%.1f</td></tr>
-<tr><th>Last heartbeat</th><td>%s</td></tr>
-</tbody></table></div>
-<div class="card"><h2>Catalog</h2><p>%s</p></div>`,
-		n.ID, strings.ToLower(n.Status), n.Status, orDash(n.ActiveModel),
-		n.VRAMFreeMB, n.VRAMTotalMB, n.ActiveRequests, n.EstimatedTPS,
-			n.LastHeartbeat.Format(time.RFC3339), strings.Join(n.Catalog, ", "))
-	return renderPage(n.ID, body)
+	return renderPage(nodeDetailTmpl, nodeDetailData{pageData: pageData{Title: n.ID}, N: n})
 }
 
-func auditPage(entries []audit.Entry) string {
-	body := `<h1>Request audit log</h1>
-<table><thead><tr><th>Time</th><th>API key</th><th>Node</th><th>Model req / served</th><th>Streamed</th><th>Status</th><th>Duration (ms)</th></tr></thead><tbody>`
-	if len(entries) == 0 {
-		body += `<tr><td colspan="7" class="muted">No requests recorded yet.</td></tr>`
-	}
-	for _, e := range entries {
-		body += fmt.Sprintf(`<tr><td>%s</td><td class="muted">%s</td><td>%s</td><td>%s / %s</td><td>%v</td><td>%d</td><td>%d</td></tr>`,
-			e.CreatedAt.Format(time.RFC3339),
-			shortID(e.APIKeyID), orDash(e.NodeID), orDash(e.ModelRequested), orDash(e.ModelServed),
-			e.WasStreamed, e.StatusCode, e.TotalDurationMs)
-	}
-	body += `</tbody></table>`
-	return renderPage("Audit log", body)
+// auditData is the structured payload for the audit page: recent request
+// audit log entries plus recent admin auth events.
+type auditData struct {
+	pageData
+	Entries     []audit.Entry
+	AdminEvents []audit.AdminEvent
+}
+
+func auditPage(entries []audit.Entry, adminEvents []audit.AdminEvent) string {
+	return renderPage(auditTmpl, auditData{
+		pageData:    pageData{Title: "Audit log"},
+		Entries:     entries,
+		AdminEvents: adminEvents,
+	})
 }
 
 func orDash(s string) string {
@@ -167,3 +183,76 @@ func shortID(s string) string {
 	}
 	return s
 }
+
+const loginSource = `{{define "content"}}
+<h1>Sign in</h1>
+<form method="post" action="/admin/login">
+<label>Admin API key <input type="password" name="password" placeholder="sk-mesh-…" autofocus/></label>
+<button type="submit">Sign in</button>
+</form>
+<p class="muted">Use <code>linguine admin create-key --name &lt;label&gt; --role admin</code> to create an admin key.</p>
+{{end}}`
+
+const homeSource = `{{define "content"}}
+<div class="metrics">
+<div class="metric"><div class="v">{{.Total}}</div><div class="l">Nodes total</div></div>
+<div class="metric"><div class="v">{{.Online}}</div><div class="l">Online</div></div>
+<div class="metric"><div class="v">{{.Offline}}</div><div class="l">Offline / stale</div></div>
+</div>
+<h2>Fleet</h2>
+<table><thead><tr><th>Node</th><th>Status</th><th>Active model</th><th>Active requests</th><th>Last heartbeat</th></tr></thead><tbody>
+{{- if not .Nodes}}
+<tr><td colspan="5" class="muted">No workers enrolled.</td></tr>
+{{- end}}
+{{range .Nodes}}
+<tr><td><a href="/admin/nodes/{{.ID}}">{{.ID}}</a></td><td><span class="status {{.Status | lower}}">{{.Status}}</span></td><td>{{.ActiveModel | orDash}}</td><td>{{.ActiveRequests}}</td><td>{{.LastHeartbeat | fmtTime}}</td></tr>
+{{- end}}
+</tbody></table>
+{{end}}`
+
+const nodesSource = `{{define "content"}}
+<h1>Node inventory</h1>
+<table hx-trigger="every 5s" hx-get="/admin/nodes" hx-target="this" hx-swap="outerHTML"><thead><tr><th>Node</th><th>Status</th><th>Active model</th><th>VRAM free / total (MB)</th><th>Active reqs</th><th>Est. TPS</th><th>Catalog</th><th>Last heartbeat</th></tr></thead><tbody>
+{{- if not .Nodes}}
+<tr><td colspan="8" class="muted">No workers enrolled.</td></tr>
+{{- end}}
+{{range .Nodes}}
+<tr><td><a href="/admin/nodes/{{.ID}}">{{.ID}}</a></td><td><span class="status {{.Status | lower}}">{{.Status}}</span></td><td>{{.ActiveModel | orDash}}</td><td>{{.VRAMFreeMB}} / {{.VRAMTotalMB}}</td><td>{{.ActiveRequests}}</td><td>{{printf "%.1f" .EstimatedTPS}}</td><td>{{.Catalog | join}}</td><td>{{.LastHeartbeat | fmtTime}}</td></tr>
+{{- end}}
+</tbody></table>
+{{end}}`
+
+const nodeDetailSource = `{{define "content"}}
+<h1>{{.N.ID}}</h1>
+<div class="card"><h2>State</h2>
+<table><tbody>
+<tr><th>Status</th><td><span class="status {{.N.Status | lower}}">{{.N.Status}}</span></td></tr>
+<tr><th>Active model</th><td>{{.N.ActiveModel | orDash}}</td></tr>
+<tr><th>VRAM free / total (MB)</th><td>{{.N.VRAMFreeMB}} / {{.N.VRAMTotalMB}}</td></tr>
+<tr><th>Active requests</th><td>{{.N.ActiveRequests}}</td></tr>
+<tr><th>Estimated TPS</th><td>{{printf "%.1f" .N.EstimatedTPS}}</td></tr>
+<tr><th>Last heartbeat</th><td>{{.N.LastHeartbeat | fmtTime}}</td></tr>
+</tbody></table></div>
+<div class="card"><h2>Catalog</h2><p>{{.N.Catalog | join}}</p></div>
+{{end}}`
+
+const auditSource = `{{define "content"}}
+<h1>Request audit log</h1>
+<table><thead><tr><th>Time</th><th>API key</th><th>Node</th><th>Model req / served</th><th>Streamed</th><th>Status</th><th>Duration (ms)</th></tr></thead><tbody>
+{{- if not .Entries}}
+<tr><td colspan="7" class="muted">No requests recorded yet.</td></tr>
+{{- end}}
+{{range .Entries}}
+<tr><td>{{.CreatedAt | fmtTime}}</td><td class="muted">{{.APIKeyID | shortID}}</td><td>{{.NodeID | orDash}}</td><td>{{.ModelRequested | orDash}} / {{.ModelServed | orDash}}</td><td>{{.WasStreamed}}</td><td>{{.StatusCode}}</td><td>{{.TotalDurationMs}}</td></tr>
+{{- end}}
+</tbody></table>
+<h2>Admin auth events</h2>
+<table><thead><tr><th>Time</th><th>Event</th><th>API key</th><th>Remote IP</th><th>Status</th></tr></thead><tbody>
+{{- if not .AdminEvents}}
+<tr><td colspan="5" class="muted">No admin events recorded yet.</td></tr>
+{{- end}}
+{{range .AdminEvents}}
+<tr><td>{{.CreatedAt | fmtTime}}</td><td>{{.Event}}</td><td class="muted">{{.APIKeyID | shortID}}</td><td>{{.RemoteIP | orDash}}</td><td>{{.StatusCode}}</td></tr>
+{{- end}}
+</tbody></table>
+{{end}}`

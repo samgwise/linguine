@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -67,9 +68,11 @@ func defaultRouterConfig() *RouterConfig {
 		DB:     DBConfig{Path: "linguine.db"},
 		Signer: SignerConfig{KeyPath: "linguine-signer.key"},
 		NNG: NNGConfig{
-			// Plain TCP by default for local dev; production sets tls+tcp://
-			// with cert/key so worker dial-out traffic is encrypted.
-			Listen: "tcp://127.0.0.1:9000",
+			// Plaintext ws:// on loopback by default; a TLS-terminating reverse
+			// proxy (nginx/Caddy) fronts it in production so the mesh, /v1 and
+			// /admin share one public 443. Set wss:// + nng.tls to terminate
+			// TLS in-process instead.
+			Listen: "ws://127.0.0.1:9000/mesh",
 		},
 		Admin: AdminConfig{
 			// Localhost-only, plain HTTP; a reverse proxy terminates TLS.
@@ -101,10 +104,19 @@ func (c *RouterConfig) Validate() error {
 			return errors.New("config: http.tls.enabled requires cert_file and key_file")
 		}
 	}
-	if strings.HasPrefix(c.NNG.Listen, "tls+") {
-		if c.NNG.TLS.CertFile == "" || c.NNG.TLS.KeyFile == "" {
-			return errors.New("config: nng tls+tcp listen requires nng.tls.cert_file and key_file")
+	switch {
+	case strings.HasPrefix(c.NNG.Listen, "wss://"):
+		// wss:// terminates TLS in-process. cert/key are optional: when both
+		// are absent the router auto-generates a self-signed cert and logs
+		// its fingerprint for workers to pin. If one is set, both must be.
+		if (c.NNG.TLS.CertFile == "") != (c.NNG.TLS.KeyFile == "") {
+			return errors.New("config: nng wss:// requires both nng.tls.cert_file and key_file, or neither")
 		}
+	case strings.HasPrefix(c.NNG.Listen, "ws://"):
+		// Plaintext ws:// — front with a TLS-terminating reverse proxy in
+		// production; the mesh is unencrypted on the wire as presented.
+	default:
+		return fmt.Errorf("config: nng.listen must use ws:// or wss://, got %q", c.NNG.Listen)
 	}
 	return nil
 }
@@ -127,8 +139,10 @@ func applyRouterEnv(c *RouterConfig) {
 
 // WorkerRouterConfig is the worker's view of the central router.
 type WorkerRouterConfig struct {
-	NNGAddr   string `toml:"nng_addr"`
-	TLSCAFile string `toml:"tls_ca_file"`
+	NNGAddr        string `toml:"nng_addr"`
+	TLSCAFile      string `toml:"tls_ca_file"`
+	TLSFingerprint string `toml:"tls_fingerprint"` // sha256/base64 pin for a self-signed router cert
+	HTTPProxy      string `toml:"http_proxy"`       // CONNECT proxy URL; empty -> env vars
 }
 
 // WorkerEngineConfig is the local OpenAI-compatible endpoint the worker proxies to.
@@ -147,7 +161,7 @@ type WorkerConfig struct {
 func defaultWorkerConfig() *WorkerConfig {
 	return &WorkerConfig{
 		Router: WorkerRouterConfig{
-			NNGAddr: "tls+tcp://127.0.0.1:9000",
+			NNGAddr: "wss://127.0.0.1:9000/mesh",
 		},
 		Engine: WorkerEngineConfig{
 			URL: "http://127.0.0.1:8080/v1/chat/completions",
@@ -183,6 +197,11 @@ func (c *WorkerConfig) Validate() error {
 	if c.Engine.URL == "" {
 		return errors.New("config: worker engine.url is required")
 	}
+	if c.Router.HTTPProxy != "" {
+		if _, err := url.Parse(c.Router.HTTPProxy); err != nil {
+			return fmt.Errorf("config: worker router.http_proxy: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -191,6 +210,8 @@ func applyWorkerEnv(c *WorkerConfig) {
 	envStr("LINGUINE_WORKER_ENROLLMENT_TOKEN", &c.EnrollmentToken)
 	envStr("LINGUINE_WORKER_ROUTER_NNG_ADDR", &c.Router.NNGAddr)
 	envStr("LINGUINE_WORKER_ROUTER_TLS_CA", &c.Router.TLSCAFile)
+	envStr("LINGUINE_WORKER_ROUTER_TLS_FINGERPRINT", &c.Router.TLSFingerprint)
+	envStr("LINGUINE_WORKER_ROUTER_HTTP_PROXY", &c.Router.HTTPProxy)
 	envStr("LINGUINE_WORKER_ENGINE_URL", &c.Engine.URL)
 }
 

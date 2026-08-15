@@ -5,8 +5,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"log"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"github.com/samgw/linguine/internal/catalog"
 	"github.com/samgw/linguine/internal/config"
 	"github.com/samgw/linguine/internal/engine"
+	"github.com/samgw/linguine/internal/mesh"
 	"github.com/samgw/linguine/internal/worker"
 )
 
@@ -36,8 +39,18 @@ func main() {
 	baseURL := strings.TrimSuffix(cfg.Engine.URL, "/v1/chat/completions")
 	probe := catalog.NewProbe(baseURL)
 	go probe.Run(ctx)
+
+	var meshTLS *tls.Config
+	if strings.HasPrefix(cfg.Router.NNGAddr, "wss://") {
+		meshTLS, err = mesh.ClientTLSConfig(cfg.Router.TLSCAFile, meshServerName(cfg.Router.NNGAddr), cfg.Router.TLSFingerprint)
+		if err != nil {
+			log.Fatalf("build mesh tls config: %v", err)
+		}
+	}
 	d, err := worker.NewDaemon(cfg.Router.NNGAddr, cfg.NodeID, cfg.EnrollmentToken, eng,
-		worker.WithProbe(probe))
+		worker.WithProbe(probe),
+		worker.WithTLSConfig(meshTLS),
+		worker.WithProxyURL(cfg.Router.HTTPProxy))
 	if err != nil {
 		log.Fatalf("create daemon: %v", err)
 	}
@@ -52,4 +65,14 @@ func main() {
 
 	<-ctx.Done()
 	log.Printf("[linguine] worker shutting down...")
+}
+
+// meshServerName extracts the hostname from a ws:// or wss:// mesh address
+// for TLS ServerName verification (skipped when a fingerprint pin is set).
+func meshServerName(addr string) string {
+	u, err := url.Parse(addr)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }

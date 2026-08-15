@@ -58,7 +58,7 @@ func setup(t *testing.T, staleAfter time.Duration) *testHarness {
 	}
 	t.Cleanup(func() { _ = nng.Close() })
 	addr := uniqueRouterAddr(t)
-	if err := nng.Listen(addr); err != nil {
+	if err := nng.Listen(addr, nil); err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 

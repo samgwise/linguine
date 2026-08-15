@@ -95,3 +95,14 @@ Table request_audit_logs {
 
   Note: 'Audit and usage history for dashboard charts and rate limiting. Written async so the /v1 hot path never blocks on SQLite.'
 }
+
+Table admin_audit_logs {
+  id          integer [pk, increment]
+  event       text [not null, note: 'Enum: login_failed, login_throttled, login_ok']
+  api_key_id  text [ref: > api_keys.id, note: 'Nullable; the key id when identifiable']
+  remote_ip   text [note: 'Source IP of the attempt']
+  status_code integer [not null]
+  created_at  datetime [not null, default: `CURRENT_TIMESTAMP`]
+
+  Note: 'Admin dashboard auth events for intrusion detection. Written synchronously (low frequency), unlike the async request audit log.'
+}

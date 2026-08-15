@@ -199,3 +199,27 @@ func (r *APIKeyRepo) Verify(ctx context.Context, bearer string) (*APIKey, error)
 	}
 	return nil, ErrInvalidAPIKey
 }
+
+// ActiveByID reports whether the api key id is present, active and unexpired.
+// It lets the admin dashboard re-verify a session's key on every request so
+// that revoking or expiring an admin key kills its outstanding sessions
+// immediately, rather than waiting for the signed cookie to expire.
+func (r *APIKeyRepo) ActiveByID(ctx context.Context, id string) (bool, error) {
+	var status string
+	var expiresAt sql.NullTime
+	err := r.db.QueryRowContext(ctx,
+		`SELECT status, expires_at FROM api_keys WHERE id = ?`, id).Scan(&status, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("auth: query api key by id: %w", err)
+	}
+	if status != "active" {
+		return false, nil
+	}
+	if expiresAt.Valid && expiresAt.Time.Before(time.Now()) {
+		return false, nil
+	}
+	return true, nil
+}

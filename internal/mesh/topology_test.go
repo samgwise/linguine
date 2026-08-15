@@ -65,7 +65,7 @@ func TestTopologyFraming(t *testing.T) {
 		t.Fatalf("new router: %v", err)
 	}
 	defer router.Close()
-	if err := router.Listen(addr); err != nil {
+	if err := router.Listen(addr, nil); err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 
@@ -74,7 +74,7 @@ func TestTopologyFraming(t *testing.T) {
 		t.Fatalf("new worker: %v", err)
 	}
 	defer worker.Close()
-	if err := worker.Dial(addr); err != nil {
+	if err := worker.Dial(addr, nil, ""); err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 
@@ -121,7 +121,7 @@ func TestTopologyTargeting(t *testing.T) {
 		t.Fatalf("new router: %v", err)
 	}
 	defer router.Close()
-	if err := router.Listen(addr); err != nil {
+	if err := router.Listen(addr, nil); err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 
@@ -130,7 +130,7 @@ func TestTopologyTargeting(t *testing.T) {
 		t.Fatalf("new worker A: %v", err)
 	}
 	defer workerA.Close()
-	if err := workerA.Dial(addr); err != nil {
+	if err := workerA.Dial(addr, nil, ""); err != nil {
 		t.Fatalf("dial A: %v", err)
 	}
 	workerB, err := NewWorker()
@@ -138,7 +138,7 @@ func TestTopologyTargeting(t *testing.T) {
 		t.Fatalf("new worker B: %v", err)
 	}
 	defer workerB.Close()
-	if err := workerB.Dial(addr); err != nil {
+	if err := workerB.Dial(addr, nil, ""); err != nil {
 		t.Fatalf("dial B: %v", err)
 	}
 
@@ -218,7 +218,7 @@ func TestTopologyRoundTrip(t *testing.T) {
 		t.Fatalf("new router: %v", err)
 	}
 	defer router.Close()
-	if err := router.Listen(addr); err != nil {
+	if err := router.Listen(addr, nil); err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 
@@ -227,7 +227,7 @@ func TestTopologyRoundTrip(t *testing.T) {
 		t.Fatalf("new worker: %v", err)
 	}
 	defer worker.Close()
-	if err := worker.Dial(addr); err != nil {
+	if err := worker.Dial(addr, nil, ""); err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 

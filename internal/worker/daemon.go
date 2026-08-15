@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,7 +34,9 @@ type Daemon struct {
 	enrollmentToken   string
 	activeModel       string
 	heartbeatInterval time.Duration
-	activeRequests     atomic.Int64
+	activeRequests    atomic.Int64
+	tlsConfig         *tls.Config // nil for ws:// or inproc://
+	proxyURL          string      // empty -> HTTP_PROXY/HTTPS_PROXY env
 }
 
 // Option configures a Daemon.
@@ -53,6 +56,19 @@ func WithActiveModel(m string) Option {
 // current /v1/models catalog. nil leaves the catalog empty.
 func WithProbe(p *catalog.Probe) Option {
 	return func(dn *Daemon) { dn.probe = p }
+}
+
+// WithTLSConfig sets the client TLS config used when dialling a wss:// router
+// (CA file, fingerprint pin, or system roots). nil leaves the dial plaintext.
+func WithTLSConfig(cfg *tls.Config) Option {
+	return func(dn *Daemon) { dn.tlsConfig = cfg }
+}
+
+// WithProxyURL tunnels the worker's mesh dial through an HTTP CONNECT proxy.
+// An empty string means fall back to the standard HTTP_PROXY/HTTPS_PROXY/NO_PROXY
+// environment variables.
+func WithProxyURL(u string) Option {
+	return func(dn *Daemon) { dn.proxyURL = u }
 }
 
 // NewDaemon creates a worker daemon. The NNG socket is created here.
@@ -78,7 +94,7 @@ func NewDaemon(routerAddr, nodeID, enrollmentToken string, eng engine.Engine, op
 // Run dials the router and serves jobs until ctx is cancelled or the socket
 // is closed.
 func (d *Daemon) Run(ctx context.Context) error {
-	if err := d.mesh.Dial(d.routerAddr); err != nil {
+	if err := d.mesh.Dial(d.routerAddr, d.tlsConfig, d.proxyURL); err != nil {
 		return fmt.Errorf("worker: dial router: %w", err)
 	}
 	go d.heartbeatLoop(ctx)

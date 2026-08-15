@@ -15,13 +15,17 @@
 package mesh
 
 import (
+	"crypto/tls"
 	"encoding/binary"
 	"fmt"
+	"net/url"
 
 	"go.nanomsg.org/mangos/v3"
 	"go.nanomsg.org/mangos/v3/protocol/xrep"
 	"go.nanomsg.org/mangos/v3/protocol/xreq"
-	_ "go.nanomsg.org/mangos/v3/transport/all"
+	_ "go.nanomsg.org/mangos/v3/transport/inproc"
+
+	wstransport "github.com/samgw/linguine/internal/mesh/wstransport"
 )
 
 // PipeID is mangos's 4-byte routing identifier for a single connected peer
@@ -61,10 +65,22 @@ func NewRouter() (*Router, error) {
 	return &Router{sock: sock}, nil
 }
 
-// Listen binds the router to a mangos listen address (e.g.
-// "inproc://linguine-x" for tests, "tls+tcp://0.0.0.0:9000" for production).
-func (r *Router) Listen(addr string) error {
-	if err := r.sock.Listen(addr); err != nil {
+// Listen binds the router to a mangos listen address. Use a plain "ws://"
+// address behind a TLS-terminating reverse proxy, or a "wss://" address with
+// a non-nil cfg to terminate TLS in-process; "inproc://" is for tests. TLS
+// material is applied to the listener (mangos does not accept it on the socket).
+func (r *Router) Listen(addr string, cfg *tls.Config) error {
+	l, err := r.sock.NewListener(addr, nil)
+	if err != nil {
+		return fmt.Errorf("mesh: new listener %s: %w", addr, err)
+	}
+	if cfg != nil {
+		if err := l.SetOption(mangos.OptionTLSConfig, cfg); err != nil {
+			_ = l.Close()
+			return fmt.Errorf("mesh: set listener tls config: %w", err)
+		}
+	}
+	if err := l.Listen(); err != nil {
 		return fmt.Errorf("mesh: listen %s: %w", addr, err)
 	}
 	return nil
@@ -115,9 +131,32 @@ func NewWorker() (*Worker, error) {
 	return &Worker{sock: sock}, nil
 }
 
-// Dial connects outbound to the router's listen address.
-func (w *Worker) Dial(addr string) error {
-	if err := w.sock.Dial(addr); err != nil {
+// Dial connects outbound to the router's listen address. For a "wss://"
+// address, cfg supplies the client TLS config (CA, fingerprint pin, or system
+// roots). For ws:// or inproc://, cfg is nil. proxyURL, when non-empty, tunnels
+// the dial through an HTTP CONNECT proxy; empty falls back to the standard
+// proxy environment variables. Both options are applied to the dialer, since
+// mangos does not honour them when set on the socket.
+func (w *Worker) Dial(addr string, cfg *tls.Config, proxyURL string) error {
+	d, err := w.sock.NewDialer(addr, nil)
+	if err != nil {
+		return fmt.Errorf("mesh: new dialer %s: %w", addr, err)
+	}
+	if cfg != nil {
+		if err := d.SetOption(mangos.OptionTLSConfig, cfg); err != nil {
+			return fmt.Errorf("mesh: set dialer tls config: %w", err)
+		}
+	}
+	if proxyURL != "" {
+		u, err := url.Parse(proxyURL)
+		if err != nil {
+			return fmt.Errorf("mesh: parse proxy url: %w", err)
+		}
+		if err := d.SetOption(wstransport.OptionWebSocketProxyURL, u); err != nil {
+			return fmt.Errorf("mesh: set proxy: %w", err)
+		}
+	}
+	if err := d.Dial(); err != nil {
 		return fmt.Errorf("mesh: dial %s: %w", addr, err)
 	}
 	return nil

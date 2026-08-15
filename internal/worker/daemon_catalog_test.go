@@ -27,7 +27,7 @@ func TestDaemonAdvertisesCatalog(t *testing.T) {
 	}
 	defer router.Close()
 	addr := uniqueWorkerAddr(t)
-	if err := router.Listen(addr); err != nil {
+	if err := router.Listen(addr, nil); err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 

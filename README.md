@@ -50,9 +50,11 @@ path = "linguine.db"
 key_path = "linguine-signer.key"
 
 [nng]
-listen = "tcp://0.0.0.0:9000"   # worker mesh (workers dial this)
-# For production, use TLS and provide cert/key:
-#   listen = "tls+tcp://0.0.0.0:9000"
+listen = "ws://127.0.0.1:9000/mesh"   # loopback; front /mesh with a TLS reverse proxy
+# To terminate mesh TLS in-process instead (no reverse proxy), use wss:// and
+# provide cert/key. If both are omitted the router auto-generates a
+# self-signed cert on first run and logs its fingerprint for workers to pin:
+#   listen = "wss://0.0.0.0:9000/mesh"
 #   [nng.tls]
 #   cert_file = "/etc/linguine/nng-cert.pem"
 #   key_file  = "/etc/linguine/nng-key.pem"
@@ -92,7 +94,7 @@ linguine admin create-enrollment-token --node node-gpu-sydney
 
 ```sh
 linguine --config router.toml serve
-# router HTTP on 0.0.0.0:8443, mesh on tcp://0.0.0.0:9000
+# router HTTP on 0.0.0.0:8443, mesh on ws://127.0.0.1:9000/mesh
 # admin HTTP on 127.0.0.1:8444
 ```
 
@@ -105,8 +107,11 @@ node_id = "node-gpu-sydney"
 enrollment_token = "v4.public.…from step 3…"
 
 [router]
-nng_addr = "tls+tcp://router.example.com:9000"  # the router's NNG listen addr
-# tls_ca_file = "/etc/linguine/router-ca.pem"   # for tls+tcp://
+nng_addr = "wss://router.example.com/mesh"  # the router's /mesh endpoint
+# tls_ca_file = "/etc/linguine/router-ca.pem"    # for a private CA; omit for a public CA
+# tls_fingerprint = "sha256/…="                  # pin a self-signed router cert (TOFU)
+# http_proxy = "http://corp-proxy:3128"          # egress via a corporate CONNECT proxy
+#                                               # (omit to use HTTPS_PROXY/HTTP_PROXY env)
 
 [engine]
 url = "http://127.0.0.1:8080/v1/chat/completions"  # local LLM endpoint
@@ -175,7 +180,65 @@ Sign in at `/admin/login` with the **admin API key** (the one created with
 `--role admin`). The session cookie lasts 12 hours.
 
 Pages: dashboard home (fleet summary), node inventory (auto-refreshes every
-5s), node detail, request audit log.
+5s), node detail, request audit log (request history plus admin auth events).
+
+## Production ingress (one 443)
+
+The recommended deployment fronts `/v1`, `/admin`, and the worker mesh on a
+single 443 with one TLS cert. The router keeps all three listeners on loopback
+(`http.listen` should be `127.0.0.1:8443` here so API keys never cross the
+public network in the clear) and nginx terminates TLS once.
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name router.example.com;
+    ssl_certificate     /etc/letsencrypt/live/router.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/router.example.com/privkey.pem;
+
+    # OpenAI-compatible ingress. Disable buffering and allow long streams.
+    location /v1/ {
+        proxy_pass http://127.0.0.1:8443;
+        proxy_set_header Host $host;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+    }
+
+    # Worker mesh — WebSocket upgrade to the ws:// loopback listener.
+    location /mesh {
+        proxy_pass http://127.0.0.1:9000/mesh;
+        proxy_set_header Host $host;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 1h;
+    }
+
+    # Admin dashboard.
+    location /admin/ {
+        proxy_pass http://127.0.0.1:8444;
+        proxy_set_header Host $host;
+    }
+}
+```
+
+With this setup a worker needs only its URL and enrollment token — no TLS
+files — because `wss://router.example.com/mesh` verifies against the public
+CA via system roots. If you terminate mesh TLS in-process instead (`wss://`
+with `nng.tls`), run `linguine serve` once to print the auto-generated
+cert's fingerprint and set `router.tls_fingerprint` on each worker.
+
+If you enable built-in `http.tls` instead of proxying `/v1`, note the cert is
+loaded once at startup: add a `--deploy-hook` to your certbot renewal to
+restart the `linguine` service so renewed certs are picked up.
+
+## Worker proxy egress
+
+If a worker sits behind a corporate HTTP proxy, point it at the mesh via
+`router.http_proxy` (or the standard `HTTPS_PROXY` / `NO_PROXY` environment
+variables). The worker tunnels the `wss://` dial through the proxy using HTTP
+CONNECT. (mangos' built-in WebSocket dialer ignores proxy env vars, so
+linguine vendors a patched ws transport that honours them.)
 
 ## Operating multiple workers
 
@@ -195,13 +258,20 @@ sqlite3 linguine.db "UPDATE node_enrollment_tokens SET status='revoked' WHERE id
 ## Security notes
 
 - `/v1` requires a client API key (`Authorization: Bearer sk-mesh-…`).
+  Front `/v1` with TLS (a reverse proxy or `http.tls`) so keys are never sent
+  in cleartext; the router warns at startup if `/v1` is non-loopback with TLS
+  off.
 - Workers enrol via a PASETO v4 token and dial **outbound** — no inbound
   ports needed on worker machines, so they sit safely behind NAT.
+- The worker mesh runs over `wss://` (TLS) — either terminated by your
+  reverse proxy on 443 or in-process with `nng.tls`. A plaintext `ws://`
+  listener must stay loopback; the router warns if it is exposed.
 - The admin dashboard is localhost-only by design; expose it only through
   your own TLS-terminating reverse proxy or a private network.
 - The router persists an Ed25519 signer key and an admin session secret;
   rotate both to invalidate outstanding enrollment tokens and dashboard
-  sessions respectively.
+  sessions respectively. Revoking an admin key also kills its dashboard
+  sessions immediately.
 
 ## What's next
 

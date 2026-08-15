@@ -11,11 +11,15 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
+	"net"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	adminpkg "github.com/samgw/linguine/internal/admin"
@@ -71,6 +75,7 @@ func serve(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	warnInsecureConfig(cfg)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -93,7 +98,14 @@ func serve(configPath string) error {
 		return fmt.Errorf("create mesh router: %w", err)
 	}
 	defer nng.Close()
-	if err := nng.Listen(cfg.NNG.Listen); err != nil {
+	var nngTLS *tls.Config
+	if strings.HasPrefix(cfg.NNG.Listen, "wss://") {
+		nngTLS, err = buildMeshServerTLS(cfg.NNG.TLS)
+		if err != nil {
+			return fmt.Errorf("mesh tls: %w", err)
+		}
+	}
+	if err := nng.Listen(cfg.NNG.Listen, nngTLS); err != nil {
 		return fmt.Errorf("mesh listen: %w", err)
 	}
 
@@ -220,4 +232,75 @@ func adminCreateEnrollment(configPath string, args []string) error {
 	}
 	fmt.Printf("Enrollment token (shown once — pass it to the worker):\n  %s\nid:    %s\nnode:  %s\n", token, et.ID, et.NodeName)
 	return nil
+}
+
+// buildMeshServerTLS builds the in-process TLS config for a wss:// mesh
+// listener. Configured cert/key files are loaded if present; otherwise a
+// self-signed certificate is generated and persisted, and its fingerprint is
+// logged for workers to pin in router.tls_fingerprint.
+func buildMeshServerTLS(t config.TLSFiles) (*tls.Config, error) {
+	certFile, keyFile := t.CertFile, t.KeyFile
+	if certFile == "" {
+		certFile = "linguine-mesh-cert.pem"
+	}
+	if keyFile == "" {
+		keyFile = "linguine-mesh-key.pem"
+	}
+	cert, fp, generated, err := mesh.LoadOrCreateSelfSignedCert(certFile, keyFile)
+	if err != nil {
+		return nil, err
+	}
+	if generated {
+		log.Printf("[linguine] generated self-signed mesh cert at %s/%s; fingerprint %s — pin this in each worker's router.tls_fingerprint", certFile, keyFile, fp)
+	}
+	return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}, nil
+}
+
+// warnInsecureConfig logs warnings for deployment configurations that expose
+// credentials or the admin plane in cleartext. It does not stop the serve.
+func warnInsecureConfig(cfg *config.RouterConfig) {
+	if !cfg.HTTP.TLS.Enabled && !isLoopbackHostPort(cfg.HTTP.Listen) {
+		log.Printf("[linguine] WARNING: http.listen %s is non-loopback with TLS disabled; client API keys travel in cleartext. Enable http.tls or front /v1 with a TLS-terminating reverse proxy.", cfg.HTTP.Listen)
+	}
+	if !isLoopbackHostPort(cfg.Admin.Listen) {
+		log.Printf("[linguine] WARNING: admin.listen %s is non-loopback; the admin dashboard is plaintext HTTP with no TLS of its own. Bind loopback and front with a reverse proxy.", cfg.Admin.Listen)
+	}
+	if isPlaintextMeshNonLoopback(cfg.NNG.Listen) {
+		log.Printf("[linguine] WARNING: nng.listen %s is a non-loopback plaintext ws:// mesh; traffic is unencrypted. Use wss:// or front /mesh with a TLS reverse proxy.", cfg.NNG.Listen)
+	}
+}
+
+// isLoopbackHostPort reports whether a "host:port" address binds only the
+// loopback interface. An empty host (":port") binds all interfaces and is
+// therefore treated as non-loopback.
+func isLoopbackHostPort(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	switch host {
+	case "127.0.0.1", "::1", "localhost":
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
+}
+
+// isPlaintextMeshNonLoopback reports whether a mesh listen address is a
+// plaintext ws:// bound to a non-loopback interface.
+func isPlaintextMeshNonLoopback(addr string) bool {
+	if !strings.HasPrefix(addr, "ws://") {
+		return false
+	}
+	u, err := url.Parse(addr)
+	if err != nil {
+		return false
+	}
+	return !isLoopbackHostPort(u.Host)
 }
