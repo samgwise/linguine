@@ -24,9 +24,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # Pin to a v2.x release built with Go 1.25 so the linter can
+          # analyze the project's go 1.25.0 code. v1.x binaries are built
+          # with Go 1.24 and refuse to load a go 1.25 module; the v2 config
+          # schema in .golangci.yml also requires golangci-lint v2.
+          version: v2.12
           args: --timeout 5m
 
   build:
