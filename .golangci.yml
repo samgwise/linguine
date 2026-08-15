@@ -1,0 +1,36 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+# Conservative, well-travelled linter set: the classic golangci-lint defaults
+# plus formatting and a spellchecker. Kept tight on purpose so CI is green on
+# the first run and new code is held to the same bar.
+linters:
+  default: none
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+  settings:
+    # Project comments are Australian English; use the UK dictionary so
+    # spellings like "colour"/"authorise" are not flagged as errors.
+    misspell:
+      locale: UK
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/samgw/linguine
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

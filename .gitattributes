@@ -1,0 +1,11 @@
+# Normalise text files to LF so gofmt/goimports behave identically on the
+# Linux CI runners and on Windows checkouts (core.autocrlf otherwise injects
+# CRLF locally and makes gofmt report the whole tree as changed).
+* text=auto eol=lf
+
+# Treat media and font assets as binary.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.woff2 binary
