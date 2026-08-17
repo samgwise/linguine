@@ -157,7 +157,7 @@ func (s *Store) appliedMigrations(ctx context.Context) (map[string]bool, error) 
 }
 
 // statements splits a SQL script into individual statements, ignoring
-// semicolons inside single-quoted string literals (with '' escapes) and
+// semicolons inside single-quoted string literals (with ” escapes) and
 // inside -- line comments. This lets migrations carry comments and string
 // literals that contain semicolons without confusing the runner.
 func statements(raw string) []string {

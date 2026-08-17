@@ -321,7 +321,7 @@ func (l *listener) Listen() error {
 			return mangos.ErrTLSNoConfig
 		}
 		tcfg = v.(*tls.Config)
-		if tcfg.Certificates == nil || len(tcfg.Certificates) == 0 {
+		if len(tcfg.Certificates) == 0 {
 			return mangos.ErrTLSNoCert
 		}
 	}

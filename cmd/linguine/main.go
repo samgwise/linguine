@@ -130,10 +130,10 @@ func serve(configPath string) error {
 		return fmt.Errorf("load admin session secret: %w", err)
 	}
 	adminSrv := adminpkg.New(adminpkg.Deps{
-		Keys:         auth.NewAPIKeyRepo(st.DB()),
-		Audit:        auditRepo,
-		Nodes:        srv.NodesSnapshot,
-		Listen:       cfg.Admin.Listen,
+		Keys:          auth.NewAPIKeyRepo(st.DB()),
+		Audit:         auditRepo,
+		Nodes:         srv.NodesSnapshot,
+		Listen:        cfg.Admin.Listen,
 		SessionSecret: secret,
 	})
 	adminLn, err := adminSrv.Start()

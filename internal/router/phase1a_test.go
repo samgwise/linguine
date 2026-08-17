@@ -132,10 +132,10 @@ func TestPhase1aIntegration(t *testing.T) {
 	}
 	secret := []byte("phase1a-test-secret")
 	adminSrv := admin.New(admin.Deps{
-		Keys:         h.keys,
-		Audit:        h.server.AuditRepo(),
-		Nodes:        h.server.NodesSnapshot,
-		Listen:       "127.0.0.1:0",
+		Keys:          h.keys,
+		Audit:         h.server.AuditRepo(),
+		Nodes:         h.server.NodesSnapshot,
+		Listen:        "127.0.0.1:0",
 		SessionSecret: secret,
 	})
 	adminLn, err := adminSrv.Start()

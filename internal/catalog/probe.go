@@ -20,9 +20,9 @@ const DefaultRefreshInterval = 60 * time.Second
 
 // Probe polls a local engine's /v1/models endpoint and caches the result.
 type Probe struct {
-	endpoint  string
-	client    *http.Client
-	interval   time.Duration
+	endpoint string
+	client   *http.Client
+	interval time.Duration
 
 	mu      sync.RWMutex
 	current []string
@@ -36,7 +36,7 @@ func NewProbe(baseURL string, opts ...Option) *Probe {
 	p := &Probe{
 		endpoint: baseURL + "/v1/models",
 		client:   &http.Client{},
-		interval:  DefaultRefreshInterval,
+		interval: DefaultRefreshInterval,
 	}
 	for _, o := range opts {
 		o(p)

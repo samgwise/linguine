@@ -16,18 +16,18 @@ import (
 
 // Entry is one request audit record.
 type Entry struct {
-	APIKeyID        string
-	NodeID          string
-	ModelRequested  string
-	ModelServed     string
-	PromptTokens    int
+	APIKeyID         string
+	NodeID           string
+	ModelRequested   string
+	ModelServed      string
+	PromptTokens     int
 	CompletionTokens int
-	TTFTMs          int
-	TotalDurationMs int
-	WasStreamed     bool
-	WasModelSwapped bool
-	StatusCode      int
-	CreatedAt       time.Time
+	TTFTMs           int
+	TotalDurationMs  int
+	WasStreamed      bool
+	WasModelSwapped  bool
+	StatusCode       int
+	CreatedAt        time.Time
 }
 
 // Repo writes request audit entries to request_audit_logs asynchronously.

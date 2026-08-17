@@ -121,10 +121,10 @@ func TestUpsertSyncsCatalogOnChange(t *testing.T) {
 	r := newTestRegistry(t, time.Minute)
 	insertEnrollmentToken(t, r.db, "tok-c", "node-c")
 	r.upsert(&nodeEntry{
-		id:      "node-c",
+		id:       "node-c",
 		tokenID:  "tok-c",
-		pipe:    9,
-		catalog: []string{"m1", "m2"},
+		pipe:     9,
+		catalog:  []string{"m1", "m2"},
 		lastSeen: time.Now(),
 	})
 
@@ -143,10 +143,10 @@ func TestUpsertSyncsCatalogOnChange(t *testing.T) {
 
 	// Same catalog — must not rewrite (syncedCatalog short-circuits).
 	r.upsert(&nodeEntry{
-		id:      "node-c",
+		id:       "node-c",
 		tokenID:  "tok-c",
-		pipe:    9,
-		catalog: []string{"m1", "m2"},
+		pipe:     9,
+		catalog:  []string{"m1", "m2"},
 		lastSeen: time.Now(),
 	})
 	// A different pipe for the same id is an edge case we don't exercise here;
@@ -154,10 +154,10 @@ func TestUpsertSyncsCatalogOnChange(t *testing.T) {
 
 	// Changed catalog — must rewrite to the new set.
 	r.upsert(&nodeEntry{
-		id:      "node-c",
+		id:       "node-c",
 		tokenID:  "tok-c",
-		pipe:    9,
-		catalog: []string{"m1", "m2", "m3"},
+		pipe:     9,
+		catalog:  []string{"m1", "m2", "m3"},
 		lastSeen: time.Now(),
 	})
 	if got := countModels(); got != 3 {

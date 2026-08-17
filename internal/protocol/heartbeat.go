@@ -15,7 +15,7 @@ const HeartbeatReqID = "hb"
 // PinnedSessions) are carried from Phase 1a but stay zero/nil until Phase 2
 // session affinity activates them.
 type Heartbeat struct {
-	NodeID             string   `json:"node_id"`
+	NodeID              string   `json:"node_id"`
 	EnrollmentToken     string   `json:"enrollment_token"`
 	ActiveModel         string   `json:"active_model,omitempty"`
 	Catalog             []string `json:"catalog,omitempty"`
@@ -24,6 +24,6 @@ type Heartbeat struct {
 	ActiveRequests      int      `json:"active_requests,omitempty"`
 	EstimatedTPS        float64  `json:"estimated_tps,omitempty"`
 	ActiveConversations int      `json:"active_conversations,omitempty"` // Phase 2: zero in 1a
-	CachedTokens         int      `json:"cached_tokens,omitempty"`         // Phase 2: zero in 1a
-	PinnedSessions       []string `json:"pinned_sessions,omitempty"`   // Phase 2: nil in 1a
+	CachedTokens        int      `json:"cached_tokens,omitempty"`        // Phase 2: zero in 1a
+	PinnedSessions      []string `json:"pinned_sessions,omitempty"`      // Phase 2: nil in 1a
 }

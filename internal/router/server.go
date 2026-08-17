@@ -54,7 +54,7 @@ type Server struct {
 	signer      *auth.Signer
 	keys        *auth.APIKeyRepo
 	enrollments *auth.EnrollmentRepo
-	audit      *audit.Repo
+	audit       *audit.Repo
 	db          *sql.DB
 	nodes       *nodeRegistry
 	sessions    sync.Map // reqID -> chan *protocol.Frame
@@ -76,7 +76,7 @@ func New(deps Deps) *Server {
 		signer:      deps.Signer,
 		keys:        deps.Keys,
 		enrollments: deps.Enrollments,
-		audit:      deps.Audit,
+		audit:       deps.Audit,
 		db:          deps.DB,
 		nodes:       newNodeRegistry(stale, deps.DB),
 		app:         app,
@@ -209,19 +209,19 @@ func (s *Server) handleHeartbeat(pipe mesh.PipeID, env *protocol.Envelope) {
 		return
 	}
 	s.nodes.upsert(&nodeEntry{
-		id:          enr.NodeName,
-		tokenID:     enr.ID,
-		pipe:        pipe,
-		activeModel: hb.ActiveModel,
-		catalog:     hb.Catalog,
+		id:                  enr.NodeName,
+		tokenID:             enr.ID,
+		pipe:                pipe,
+		activeModel:         hb.ActiveModel,
+		catalog:             hb.Catalog,
 		vramTotalMB:         hb.VRAMTotalMB,
 		vramFreeMB:          hb.VRAMFreeMB,
 		activeRequests:      hb.ActiveRequests,
-		estimatedTPS:       hb.EstimatedTPS,
+		estimatedTPS:        hb.EstimatedTPS,
 		activeConversations: hb.ActiveConversations,
-		cachedTokens:       hb.CachedTokens,
+		cachedTokens:        hb.CachedTokens,
 		pinnedSessions:      hb.PinnedSessions,
-		lastSeen:           time.Now(),
+		lastSeen:            time.Now(),
 	})
 }
 
@@ -244,7 +244,7 @@ func (s *Server) handleChatCompletions(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": fiber.Map{"message": "dispatch failed"}})
 	}
 	ac := auditContext{
-		apiKeyID:   ak.ID,
+		apiKeyID:    ak.ID,
 		nodeID:      node.id,
 		modelReq:    modelRequested(body),
 		modelServed: node.activeModel,
@@ -272,17 +272,17 @@ func (s *Server) streamResponse(c fiber.Ctx, reqID string, ch chan *protocol.Fra
 	c.Abandon() // keep the ctx alive for the async stream writer
 	return c.SendStreamWriter(func(w *bufio.Writer) {
 		defer s.sessions.Delete(reqID)
-		status := fiber.StatusOK
 		for f := range ch {
 			switch f.Type {
 			case protocol.FrameTypeChunk:
 				_, _ = w.Write(f.Payload)
 				if err := w.Flush(); err != nil {
-					status = fiber.StatusBadGateway // client disconnected mid-stream
+					// Client disconnected mid-stream; record the audit as 502 and stop.
+					s.recordAudit(ac, fiber.StatusBadGateway)
 					return
 				}
 			case protocol.FrameTypeEOF:
-				s.recordAudit(ac, status)
+				s.recordAudit(ac, fiber.StatusOK)
 				return
 			case protocol.FrameTypeError:
 				fmt.Fprintf(w, "data: {\"error\":{\"message\":%q}}\n\n", string(f.Payload))
@@ -348,7 +348,7 @@ func modelRequested(body []byte) string {
 // Token counts and TTFT are best-effort: proper usage parsing arrives with
 // the observability/session-affinity work in Phase 2; 1a records 0.
 type auditContext struct {
-	apiKeyID   string
+	apiKeyID    string
 	nodeID      string
 	modelReq    string
 	modelServed string

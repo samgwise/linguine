@@ -40,10 +40,10 @@ func TestRepoInsertAndRecentRoundTrip(t *testing.T) {
 	defer repo.Close()
 
 	repo.Record(Entry{
-		APIKeyID:        "key-1",
-		NodeID:          "node-1",
-		ModelRequested:  "llama-3.1-8b",
-		ModelServed:     "llama-3.1-8b",
+		APIKeyID:         "key-1",
+		NodeID:           "node-1",
+		ModelRequested:   "llama-3.1-8b",
+		ModelServed:      "llama-3.1-8b",
 		PromptTokens:     120,
 		CompletionTokens: 45,
 		TotalDurationMs:  850,

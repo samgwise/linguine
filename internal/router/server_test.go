@@ -64,14 +64,14 @@ func setup(t *testing.T, staleAfter time.Duration) *testHarness {
 
 	srv := New(Deps{
 		NNG:         nng,
-		Signer:       signer,
-		Keys:         keys,
-		Enrollments:  enrollments,
-		Audit:        audit.NewRepo(db, 256),
-		DB:           db,
-		HTTPListen:   "127.0.0.1:0",
-		TLS:          config.TLSFiles{},
-		StaleAfter:    staleAfter,
+		Signer:      signer,
+		Keys:        keys,
+		Enrollments: enrollments,
+		Audit:       audit.NewRepo(db, 256),
+		DB:          db,
+		HTTPListen:  "127.0.0.1:0",
+		TLS:         config.TLSFiles{},
+		StaleAfter:  staleAfter,
 	})
 
 	raw := auth.GenerateAPIKey()

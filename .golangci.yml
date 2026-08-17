@@ -4,23 +4,38 @@ run:
   timeout: 5m
 
 # Conservative, well-travelled linter set: the classic golangci-lint defaults
-# plus formatting and a spellchecker. Kept tight on purpose so CI is green on
-# the first run and new code is held to the same bar.
+# plus a spellchecker. (gosimple was folded into staticcheck in golangci-lint
+# v2, so it is not listed separately.)
 linters:
   default: none
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
     - unused
     - misspell
   settings:
-    # Project comments are Australian English; use the UK dictionary so
-    # spellings like "colour"/"authorise" are not flagged as errors.
+    # Use the US dictionary so library names and schema identifiers that use
+    # American spellings (fiber, color, catalog, enroll) are not flagged.
+    # Australian/British spellings used in comments per the project's
+    # Australian-English convention are excluded via the rule below.
     misspell:
-      locale: UK
+      locale: US
+  exclusions:
+    rules:
+      # Deferred Close/Shutdown calls in cleanup paths: the error from closing
+      # a resource during teardown is almost never actionable.
+      - linters: [errcheck]
+        text: 'Error return value of .*(Close|Shutdown).*is not checked'
+      # Unchecked writes to response writers / SSE streams / log writers: a
+      # failed write usually means the client has disconnected and there is
+      # nothing useful to do with the error.
+      - linters: [errcheck]
+        text: 'Error return value of .*(Write|WriteString|Fprintf|Copy).*is not checked'
+      # Australian/British comment spellings per the project convention.
+      - linters: [misspell]
+        text: '`(artefact|behaviour|cancelled|dialling|finalised|honour|honours|serialise)` is a misspelling'
 
 formatters:
   enable:

@@ -142,7 +142,7 @@ type WorkerRouterConfig struct {
 	NNGAddr        string `toml:"nng_addr"`
 	TLSCAFile      string `toml:"tls_ca_file"`
 	TLSFingerprint string `toml:"tls_fingerprint"` // sha256/base64 pin for a self-signed router cert
-	HTTPProxy      string `toml:"http_proxy"`       // CONNECT proxy URL; empty -> env vars
+	HTTPProxy      string `toml:"http_proxy"`      // CONNECT proxy URL; empty -> env vars
 }
 
 // WorkerEngineConfig is the local OpenAI-compatible endpoint the worker proxies to.

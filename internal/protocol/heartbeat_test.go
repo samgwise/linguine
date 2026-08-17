@@ -7,14 +7,14 @@ import (
 
 func TestHeartbeatJSONRoundTrip(t *testing.T) {
 	hb := Heartbeat{
-		NodeID:         "node-gpu-sydney",
+		NodeID:          "node-gpu-sydney",
 		EnrollmentToken: "v4.public.token",
 		ActiveModel:     "llama-3.1-8b-instruct",
 		Catalog:         []string{"llama-3.1-8b-instruct", "mistral-7b-v0.3", "deepseek-coder-6.7b"},
-		VRAMTotalMB:      24576,
-		VRAMFreeMB:       18200,
-		ActiveRequests:   2,
-		EstimatedTPS:     42.5,
+		VRAMTotalMB:     24576,
+		VRAMFreeMB:      18200,
+		ActiveRequests:  2,
+		EstimatedTPS:    42.5,
 	}
 	data, err := json.Marshal(hb)
 	if err != nil {
@@ -54,7 +54,7 @@ func TestHeartbeatPhase2FieldsOmitEmpty(t *testing.T) {
 	// and decode as zero values, so a Phase 1a heartbeat is identical to the
 	// old shape on the wire.
 	hb := Heartbeat{
-		NodeID:         "node-x",
+		NodeID:          "node-x",
 		EnrollmentToken: "tok",
 		ActiveModel:     "llama-3.1-8b-instruct",
 	}

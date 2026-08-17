@@ -25,10 +25,10 @@ type nodeEntry struct {
 	vramTotalMB         uint64
 	vramFreeMB          uint64
 	activeRequests      int
-	estimatedTPS         float64
-	activeConversations int    // Phase 2: zero in 1a
-	cachedTokens         int    // Phase 2: zero in 1a
-	pinnedSessions       []string // Phase 2: nil in 1a
+	estimatedTPS        float64
+	activeConversations int      // Phase 2: zero in 1a
+	cachedTokens        int      // Phase 2: zero in 1a
+	pinnedSessions      []string // Phase 2: nil in 1a
 
 	lastSeen      time.Time
 	syncedCatalog []string // last catalog written to node_model_catalogs
@@ -38,20 +38,20 @@ type nodeEntry struct {
 // least-connections (smallest active_requests, tie-break by insertion order)
 // — the direct stepping stone to the cost-aware scorer in Phase 1b.
 type nodeRegistry struct {
-	mu          sync.Mutex
-	byID        map[string]*nodeEntry
-	byPipe      map[mesh.PipeID]*nodeEntry
-	order        []string
-	staleAfter   time.Duration
-	db           *sql.DB
+	mu         sync.Mutex
+	byID       map[string]*nodeEntry
+	byPipe     map[mesh.PipeID]*nodeEntry
+	order      []string
+	staleAfter time.Duration
+	db         *sql.DB
 }
 
 func newNodeRegistry(staleAfter time.Duration, db *sql.DB) *nodeRegistry {
 	return &nodeRegistry{
-		byID:        make(map[string]*nodeEntry),
-		byPipe:      make(map[mesh.PipeID]*nodeEntry),
-		staleAfter:   staleAfter,
-		db:           db,
+		byID:       make(map[string]*nodeEntry),
+		byPipe:     make(map[mesh.PipeID]*nodeEntry),
+		staleAfter: staleAfter,
+		db:         db,
 	}
 }
 
@@ -193,9 +193,9 @@ func (s *Server) NodesSnapshot() []fleet.NodeView {
 			status = "stale"
 		}
 		out = append(out, fleet.NodeView{
-			ID:            e.id,
-			Status:        status,
-			ActiveModel:   e.activeModel,
+			ID:             e.id,
+			Status:         status,
+			ActiveModel:    e.activeModel,
 			Catalog:        e.catalog,
 			VRAMTotalMB:    e.vramTotalMB,
 			VRAMFreeMB:     e.vramFreeMB,

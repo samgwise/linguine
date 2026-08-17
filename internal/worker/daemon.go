@@ -149,7 +149,7 @@ func (d *Daemon) sendHeartbeat() {
 		NodeID:          d.nodeID,
 		EnrollmentToken: d.enrollmentToken,
 		ActiveModel:     d.activeModel,
-		ActiveRequests:    int(d.activeRequests.Load()),
+		ActiveRequests:  int(d.activeRequests.Load()),
 		// VRAM/TPS are best-effort: proxy engines don't expose them
 		// consistently, so 1a leaves them zero. Phase 1b/2 populates them
 		// from a managed engine's telemetry.

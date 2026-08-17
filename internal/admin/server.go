@@ -25,11 +25,11 @@ import (
 )
 
 const (
-	cookieName    = "linguine_admin"
-	sessionTTL    = 12 * time.Hour
-	auditLimit    = 50
-	loginLimit    = 5             // max login attempts per IP per window
-	loginWindow   = 1 * time.Minute // throttle window
+	cookieName  = "linguine_admin"
+	sessionTTL  = 12 * time.Hour
+	auditLimit  = 50
+	loginLimit  = 5               // max login attempts per IP per window
+	loginWindow = 1 * time.Minute // throttle window
 )
 
 // Deps holds the admin dashboard's external dependencies.
@@ -272,13 +272,4 @@ func (s *Server) verifySessionCookie(cookie string) (string, bool) {
 		return "", false
 	}
 	return keyID, true
-}
-
-// extractBearer pulls the token out of a "Bearer <token>" header value.
-func extractBearer(authz string) string {
-	const prefix = "Bearer "
-	if len(authz) > len(prefix) && strings.EqualFold(authz[:len(prefix)], prefix) {
-		return authz[len(prefix):]
-	}
-	return ""
 }
