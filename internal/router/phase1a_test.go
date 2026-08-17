@@ -64,6 +64,45 @@ func TestPhase1aIntegration(t *testing.T) {
 	defer h.server.Shutdown()
 	url := "http://" + ln.Addr().String() + "/v1/chat/completions"
 
+	// waitForNodeLoad polls the router's node snapshot until nodeID reports
+	// activeRequests >= want, or fails the test after a deadline. This
+	// replaces a fixed sleep that was flaky under CI load (race detector +
+	// coverage instrumentation on a shared runner): if the heartbeat had not
+	// propagated activeRequests=1 before request 2 was sent, both nodes tied
+	// at 0, request 2 routed to node-a (first-inserted), and the test
+	// deadlocked on the blocking stub.
+	waitForNodeLoad := func(nodeID string, want int) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			for _, n := range h.server.NodesSnapshot() {
+				if n.ID == nodeID && n.ActiveRequests >= want {
+					return
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("node %s activeRequests never reached %d", nodeID, want)
+	}
+	// waitForAuditCount polls the async audit writer until it has flushed at
+	// least want entries, or fails after a deadline. The writer flushes every
+	// 500ms; a fixed 800ms sleep could race it under load.
+	waitForAuditCount := func(want int) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			entries, err := h.server.AuditRepo().Recent(context.Background(), want, "")
+			if err != nil {
+				t.Fatalf("audit recent: %v", err)
+			}
+			if len(entries) >= want {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatalf("audit count never reached %d", want)
+	}
+
 	// Request 1 goes to node-a (tie on 0, first-inserted wins) and holds it
 	// open, keeping node-a's activeRequests at 1.
 	client := &http.Client{
@@ -80,7 +119,7 @@ func TestPhase1aIntegration(t *testing.T) {
 
 	// Wait for node-a's heartbeat to carry activeRequests=1 to the router so
 	// least-connections sees node-b (0) as less loaded.
-	time.Sleep(300 * time.Millisecond)
+	waitForNodeLoad("node-a", 1)
 
 	// Request 2 must route to node-b (fewer active requests).
 	body2, status2 := postStream(t, h, url)
@@ -100,7 +139,7 @@ func TestPhase1aIntegration(t *testing.T) {
 	_ = dA // keep the daemon reference alive
 
 	// Wait for the async audit writer to flush both requests.
-	time.Sleep(800 * time.Millisecond)
+	waitForAuditCount(2)
 	entries, err := h.server.AuditRepo().Recent(context.Background(), 10, "")
 	if err != nil {
 		t.Fatalf("audit recent: %v", err)
