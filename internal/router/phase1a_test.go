@@ -64,13 +64,39 @@ func TestPhase1aIntegration(t *testing.T) {
 	defer h.server.Shutdown()
 	url := "http://" + ln.Addr().String() + "/v1/chat/completions"
 
+	// waitForNodes polls the router's node snapshot until all the given node
+	// ids are present, or fails the test after a deadline. The daemons dial
+	// and heartbeat asynchronously; sending request 1 before they register
+	// yields a 503, so node-a never receives a job and activeRequests never
+	// reaches 1.
+	waitForNodes := func(ids ...string) {
+		t.Helper()
+		want := map[string]bool{}
+		for _, id := range ids {
+			want[id] = true
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			have := map[string]bool{}
+			for _, n := range h.server.NodesSnapshot() {
+				have[n.ID] = true
+			}
+			ok := true
+			for id := range want {
+				if !have[id] {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("nodes never registered: want %v", ids)
+	}
 	// waitForNodeLoad polls the router's node snapshot until nodeID reports
-	// activeRequests >= want, or fails the test after a deadline. This
-	// replaces a fixed sleep that was flaky under CI load (race detector +
-	// coverage instrumentation on a shared runner): if the heartbeat had not
-	// propagated activeRequests=1 before request 2 was sent, both nodes tied
-	// at 0, request 2 routed to node-a (first-inserted), and the test
-	// deadlocked on the blocking stub.
+	// activeRequests >= want, or fails the test after a deadline.
 	waitForNodeLoad := func(nodeID string, want int) {
 		t.Helper()
 		deadline := time.Now().Add(5 * time.Second)
@@ -103,6 +129,11 @@ func TestPhase1aIntegration(t *testing.T) {
 		t.Fatalf("audit count never reached %d", want)
 	}
 
+	// Wait for both workers to register before sending request 1, otherwise
+	// request 1 gets a 503 (no worker available) and node-a never receives
+	// a job.
+	waitForNodes("node-a", "node-b")
+
 	// Request 1 goes to node-a (tie on 0, first-inserted wins) and holds it
 	// open, keeping node-a's activeRequests at 1.
 	client := &http.Client{
@@ -116,6 +147,9 @@ func TestPhase1aIntegration(t *testing.T) {
 		t.Fatalf("request 1: %v", err)
 	}
 	defer resp1.Body.Close()
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("request 1 status: got %d, want %d", resp1.StatusCode, http.StatusOK)
+	}
 
 	// Wait for node-a's heartbeat to carry activeRequests=1 to the router so
 	// least-connections sees node-b (0) as less loaded.
