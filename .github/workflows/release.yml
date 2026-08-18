@@ -21,8 +21,8 @@ jobs:
           - goos: linux
             goarch: arm64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -42,7 +42,7 @@ jobs:
           tar -czf linguine-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz linguine linguine-worker
           shasum -a 256 linguine-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz \
             > linguine-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: linguine-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/linguine-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz*
@@ -52,8 +52,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v6
         with:
           path: dist
           merge-multiple: true
