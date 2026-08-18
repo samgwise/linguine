@@ -53,6 +53,48 @@ jobs:
           CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /tmp/linguine-worker ./cmd/worker
           /tmp/linguine --help || true
 
+  # Build the Linux release binaries on every push/PR and upload them as
+  # workflow artifacts so they can be downloaded straight from the Actions run
+  # page, without waiting for a tagged release. The build mirrors
+  # release.yml so the artifacts are identical to a release tarball.
+  release-artifacts:
+    name: Release artifacts (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      # CGO-free (modernc.org/sqlite), so cross-compilation needs no C toolchain.
+      - name: Build binaries
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags '-s -w' -o dist/linguine ./cmd/linguine
+          go build -trimpath -ldflags '-s -w' -o dist/linguine-worker ./cmd/worker
+      - name: Tarball + checksum
+        run: |
+          cd dist
+          tar -czf linguine-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz linguine linguine-worker
+          shasum -a 256 linguine-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz \
+            > linguine-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz.sha256
+      - uses: actions/upload-artifact@v6
+        with:
+          name: linguine-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/linguine-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz*
+
   test:
     name: Test
     runs-on: ubuntu-latest
