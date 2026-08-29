@@ -399,5 +399,40 @@ func TestFailedLoginAudited(t *testing.T) {
 	_ = adminKeyID
 }
 
+// TestPagesServeTextHTML guards against the Fiber v3 Type() footgun: Type()
+// takes a file extension ("html"), not a MIME type ("text/html"), and an
+// unknown extension falls back to application/octet-stream, which makes
+// browsers download the page instead of rendering it.
+func TestPagesServeTextHTML(t *testing.T) {
+	srv, _, adminKeyID := newTestServer(t)
+	cookie := srv.issueSessionCookie(adminKeyID)
+
+	cases := []struct {
+		name        string
+		path        string
+		withSession bool
+	}{
+		{"login", "/admin/login", false},
+		{"home", "/admin", true},
+		{"nodes", "/admin/nodes", true},
+		{"node detail", "/admin/nodes/node-1", true},
+		{"audit", "/admin/audit", true},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest("GET", tc.path, nil)
+		if tc.withSession {
+			req.Header.Set("Cookie", cookieName+"="+cookie)
+		}
+		resp, err := srv.App().Test(req)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		resp.Body.Close()
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+			t.Errorf("%s page Content-Type: got %q, want text/html (browsers will download the page)", tc.name, ct)
+		}
+	}
+}
+
 // keep fiber referenced for the cookie SameSite constant used above.
 var _ = fiber.CookieSameSiteLaxMode

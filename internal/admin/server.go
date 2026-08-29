@@ -137,7 +137,10 @@ func (s *Server) requireSession(c fiber.Ctx) error {
 }
 
 func (s *Server) loginForm(c fiber.Ctx) error {
-	return c.Type("text/html").SendString(loginPage())
+	// NB: Fiber v3's Type() takes a file extension, not a MIME type; passing
+	// "text/html" falls through to application/octet-stream and browsers
+	// download the page instead of rendering it.
+	return c.Type("html").SendString(loginPage())
 }
 
 func (s *Server) loginSubmit(c fiber.Ctx) error {
@@ -213,18 +216,18 @@ func (s *Server) home(c fiber.Ctx) error {
 			online++
 		}
 	}
-	return c.Type("text/html").SendString(homePage(nodes, online))
+	return c.Type("html").SendString(homePage(nodes, online))
 }
 
 func (s *Server) nodesPage(c fiber.Ctx) error {
-	return c.Type("text/html").SendString(nodesPage(s.nodes()))
+	return c.Type("html").SendString(nodesPage(s.nodes()))
 }
 
 func (s *Server) nodeDetailPage(c fiber.Ctx) error {
 	id := c.Params("id")
 	for _, n := range s.nodes() {
 		if n.ID == id {
-			return c.Type("text/html").SendString(nodeDetailPage(n))
+			return c.Type("html").SendString(nodeDetailPage(n))
 		}
 	}
 	return c.Status(fiber.StatusNotFound).SendString("node not found")
@@ -239,7 +242,7 @@ func (s *Server) auditPage(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).SendString("admin audit query failed")
 	}
-	return c.Type("text/html").SendString(auditPage(entries, adminEvents))
+	return c.Type("html").SendString(auditPage(entries, adminEvents))
 }
 
 // issueSessionCookie returns `keyID|expiresUnix|hmac` for the given admin

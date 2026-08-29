@@ -4,6 +4,10 @@
 *.exe
 *.exe~
 
+# Secrets / key material
+linguine-signer.key
+linguine-admin.key
+
 # SQLite runtime artefacts
 *.db
 *.db-wal
