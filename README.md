@@ -89,7 +89,8 @@ linguine admin revoke-key --id <api-key-id>
 ```
 
 Revocation takes effect immediately: `/v1` calls fail on their next use and
-admin dashboard sessions die on the next request.
+admin dashboard sessions die on the next request. Key creation and revocation
+are also available in the dashboard's API keys page (client keys only).
 
 ### 3. Create a worker enrollment token
 
@@ -188,7 +189,10 @@ Sign in at `/admin/login` with the **admin API key** (the one created with
 `--role admin`). The session cookie lasts 12 hours.
 
 Pages: dashboard home (fleet summary), node inventory (auto-refreshes every
-5s), node detail, request audit log (request history plus admin auth events).
+5s), node detail, request audit log (request history plus admin auth events),
+and API keys — create and revoke client keys from the browser (admin keys stay
+CLI-only; the raw key of a newly created key is shown once, exactly like the
+CLI).
 
 ## Production ingress (one 443)
 

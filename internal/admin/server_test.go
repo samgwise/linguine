@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -254,6 +255,224 @@ func TestNodesPageHtmxFragment(t *testing.T) {
 	resp3.Body.Close()
 	if !strings.Contains(string(body3), "<!DOCTYPE html>") {
 		t.Error("boosted navigation should still receive the full page")
+	}
+}
+
+// TestKeysPageRequiresSession asserts the keys page sits behind the session
+// guard like every other dashboard page.
+func TestKeysPageRequiresSession(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	req := httptest.NewRequest("GET", "/admin/keys", nil)
+	resp, err := srv.App().Test(req)
+	if err != nil {
+		t.Fatalf("app test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("status: got %d, want %d", resp.StatusCode, http.StatusSeeOther)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/admin/login" {
+		t.Errorf("location: got %q want /admin/login", loc)
+	}
+}
+
+// TestKeysPageRendersRows checks the list shows existing keys with their
+// status, and that the create form is present.
+func TestKeysPageRendersRows(t *testing.T) {
+	srv, _, adminKeyID := newTestServer(t)
+	cookie := srv.issueSessionCookie(adminKeyID)
+	req := httptest.NewRequest("GET", "/admin/keys", nil)
+	req.Header.Set("Cookie", cookieName+"="+cookie)
+	resp, err := srv.App().Test(req)
+	if err != nil {
+		t.Fatalf("app test: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if !strings.Contains(string(body), "admin-key") {
+		t.Error("keys page should render the admin key row")
+	}
+	if !strings.Contains(string(body), `class="status active"`) {
+		t.Error("keys page should mark the key active")
+	}
+	if !strings.Contains(string(body), `action="/admin/keys"`) {
+		t.Error("keys page should include the create form")
+	}
+}
+
+// TestKeysCreateFlow walks the full create path: POST mints a key, the nonce
+// page reveals the raw key exactly once, the raw key never appears on the
+// list page, and a replayed nonce link reveals nothing.
+func TestKeysCreateFlow(t *testing.T) {
+	srv, db, adminKeyID := newTestServer(t)
+	cookie := srv.issueSessionCookie(adminKeyID)
+
+	req := httptest.NewRequest("POST", "/admin/keys", strings.NewReader("name=smoke-ui-key"))
+	req.Header.Set("Cookie", cookieName+"="+cookie)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := srv.App().Test(req)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("create: got %d, want %d", resp.StatusCode, http.StatusSeeOther)
+	}
+	loc := resp.Header.Get("Location")
+	if !strings.HasPrefix(loc, "/admin/keys/created?nonce=") {
+		t.Fatalf("create redirect: got %q", loc)
+	}
+
+	// First view: the raw key, exactly once.
+	req2 := httptest.NewRequest("GET", loc, nil)
+	req2.Header.Set("Cookie", cookieName+"="+cookie)
+	resp2, err := srv.App().Test(req2)
+	if err != nil {
+		t.Fatalf("created page: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("created page: got %d, want %d", resp2.StatusCode, http.StatusOK)
+	}
+	if cc := resp2.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("created page Cache-Control: got %q, want no-store", cc)
+	}
+	m := regexp.MustCompile(`sk-mesh-[A-Za-z0-9_-]+`).FindString(string(body2))
+	if m == "" {
+		t.Fatal("created page did not reveal the raw key")
+	}
+	if strings.Count(string(body2), m) != 1 {
+		t.Error("created page should reveal the raw key exactly once")
+	}
+
+	// Replay: same URL reveals nothing.
+	req3 := httptest.NewRequest("GET", loc, nil)
+	req3.Header.Set("Cookie", cookieName+"="+cookie)
+	resp3, err := srv.App().Test(req3)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusSeeOther || resp3.Header.Get("Location") != "/admin/keys" {
+		t.Errorf("replay: got %d (location %q), want 303 to /admin/keys", resp3.StatusCode, resp3.Header.Get("Location"))
+	}
+
+	// The list page must never show the raw key, and the key verifies.
+	req4 := httptest.NewRequest("GET", "/admin/keys", nil)
+	req4.Header.Set("Cookie", cookieName+"="+cookie)
+	resp4, err := srv.App().Test(req4)
+	if err != nil {
+		t.Fatalf("list after create: %v", err)
+	}
+	body4, _ := io.ReadAll(resp4.Body)
+	resp4.Body.Close()
+	if strings.Contains(string(body4), m) {
+		t.Error("raw key must never appear on the list page")
+	}
+	if _, err := auth.NewAPIKeyRepo(db).Verify(context.Background(), m); err != nil {
+		t.Errorf("created key should verify: %v", err)
+	}
+	// Audit event recorded.
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM admin_audit_logs WHERE event = 'key_created'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("key_created audit rows: got %d, err %v; want 1", n, err)
+	}
+}
+
+// TestKeysCreateEmptyName redirects back to the list with an error flash.
+func TestKeysCreateEmptyName(t *testing.T) {
+	srv, _, adminKeyID := newTestServer(t)
+	cookie := srv.issueSessionCookie(adminKeyID)
+	req := httptest.NewRequest("POST", "/admin/keys", strings.NewReader("name="))
+	req.Header.Set("Cookie", cookieName+"="+cookie)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := srv.App().Test(req)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("status: got %d, want %d", resp.StatusCode, http.StatusSeeOther)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/admin/keys?error=name+is+required" {
+		t.Errorf("location: got %q", loc)
+	}
+}
+
+// TestKeysRevokeFlow checks that revoking from the UI takes effect
+// immediately, records an audit event, and surfaces unknown ids safely.
+func TestKeysRevokeFlow(t *testing.T) {
+	srv, db, adminKeyID := newTestServer(t)
+	cookie := srv.issueSessionCookie(adminKeyID)
+	keys := auth.NewAPIKeyRepo(db)
+	raw := auth.GenerateAPIKey()
+	victim, err := keys.Create(context.Background(), "victim", raw)
+	if err != nil {
+		t.Fatalf("create victim: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/admin/keys/"+victim.ID+"/revoke", nil)
+	req.Header.Set("Cookie", cookieName+"="+cookie)
+	resp, err := srv.App().Test(req)
+	if err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/admin/keys" {
+		t.Errorf("revoke: got %d (location %q), want 303 to /admin/keys", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if _, err := keys.Verify(context.Background(), raw); err == nil {
+		t.Error("revoked key should no longer verify")
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM admin_audit_logs WHERE event = 'key_revoked'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("key_revoked audit rows: got %d, err %v; want 1", n, err)
+	}
+
+	// Unknown id: redirected back with an error flash, no audit row.
+	req2 := httptest.NewRequest("POST", "/admin/keys/nope/revoke", nil)
+	req2.Header.Set("Cookie", cookieName+"="+cookie)
+	resp2, err := srv.App().Test(req2)
+	if err != nil {
+		t.Fatalf("revoke unknown: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusSeeOther {
+		t.Errorf("revoke unknown: got %d, want %d", resp2.StatusCode, http.StatusSeeOther)
+	}
+	if loc := resp2.Header.Get("Location"); loc != "/admin/keys?error=no+such+key" {
+		t.Errorf("revoke unknown location: got %q", loc)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM admin_audit_logs WHERE event = 'key_revoked'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("key_revoked audit rows after unknown id: got %d, err %v; want 1", n, err)
+	}
+}
+
+// TestKeysRevokeSelfRejected guards against accidentally revoking the key of
+// the current session from the UI.
+func TestKeysRevokeSelfRejected(t *testing.T) {
+	srv, db, adminKeyID := newTestServer(t)
+	cookie := srv.issueSessionCookie(adminKeyID)
+	req := httptest.NewRequest("POST", "/admin/keys/"+adminKeyID+"/revoke", nil)
+	req.Header.Set("Cookie", cookieName+"="+cookie)
+	resp, err := srv.App().Test(req)
+	if err != nil {
+		t.Fatalf("self revoke: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("status: got %d, want %d", resp.StatusCode, http.StatusSeeOther)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/admin/keys?error=cannot+revoke+the+key+of+your+own+session" {
+		t.Errorf("location: got %q", loc)
+	}
+	var status string
+	if err := db.QueryRow(`SELECT status FROM api_keys WHERE id = ?`, adminKeyID).Scan(&status); err != nil || status != "active" {
+		t.Errorf("own key status: got %q, err %v; want active", status, err)
 	}
 }
 

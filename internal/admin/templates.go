@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/samgw/linguine/internal/audit"
+	"github.com/samgw/linguine/internal/auth"
 	"github.com/samgw/linguine/internal/fleet"
 )
 
@@ -55,6 +56,11 @@ td { font-variant-numeric: tabular-nums; }
 .status.online { background: #dafbe1; color: #1a7f37; }
 .status.stale { background: #fff8c5; color: #9a6700; }
 .status.offline { background: #ffebe9; color: #cf222e; }
+.status.active { background: #dafbe1; color: #1a7f37; }
+.status.revoked { background: #ffebe9; color: #cf222e; }
+.status.expired { background: #eff1f3; color: #57606a; }
+.error { background: #ffebe9; border: 1px solid #ff818266; color: #cf222e; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
+.key-reveal { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 14px 16px; word-break: break-all; user-select: all; }
 .card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
 .metrics { display: flex; gap: 20px; }
 .metric { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px 20px; flex: 1; }
@@ -73,6 +79,7 @@ a { color: #0969da; }
 <a href="/admin">Dashboard</a>
 <a href="/admin/nodes">Nodes</a>
 <a href="/admin/audit">Audit log</a>
+<a href="/admin/keys">API keys</a>
 <form method="post" action="/admin/logout" style="display:inline"><button type="submit" style="background:#636c76">Sign out</button></form>
 </header>
 <main>
@@ -96,6 +103,8 @@ var (
 	nodeDetailTmpl = mustPage(nodeDetailSource)
 	auditTmpl      = mustPage(auditSource)
 	loginTmpl      = mustPage(loginSource)
+	keysTmpl       = mustPage(keysSource)
+	keyCreatedTmpl = mustPage(keyCreatedSource)
 )
 
 func renderPage(tmpl *template.Template, data any) string {
@@ -164,6 +173,29 @@ type nodeDetailData struct {
 
 func nodeDetailPage(n fleet.NodeView) string {
 	return renderPage(nodeDetailTmpl, nodeDetailData{pageData: pageData{Title: n.ID}, N: n})
+}
+
+// keysData carries the key list plus an optional error flash (e.g. a
+// rejected revoke or missing name) shown at the top of the page.
+type keysData struct {
+	pageData
+	Keys  []auth.APIKey
+	Error string
+}
+
+func keysPage(keys []auth.APIKey, errFlash string) string {
+	return renderPage(keysTmpl, keysData{
+		pageData: pageData{Title: "API keys"},
+		Keys:     keys,
+		Error:    errFlash,
+	})
+}
+
+func keyCreatedPage(raw string) string {
+	return renderPage(keyCreatedTmpl, struct {
+		pageData
+		RawKey string
+	}{pageData: pageData{Title: "Key created"}, RawKey: raw})
 }
 
 // auditData is the structured payload for the audit page: recent request
@@ -273,4 +305,34 @@ const auditSource = `{{define "content"}}
 <tr><td>{{.CreatedAt | fmtTime}}</td><td>{{.Event}}</td><td class="muted">{{.APIKeyID | shortID}}</td><td>{{.RemoteIP | orDash}}</td><td>{{.StatusCode}}</td></tr>
 {{- end}}
 </tbody></table>
+{{end}}`
+
+const keysSource = `{{define "content"}}
+{{- if .Error}}
+<div class="error">{{.Error}}</div>
+{{- end}}
+<h1>API keys</h1>
+<div class="card">
+<h2>Create a client key</h2>
+<form method="post" action="/admin/keys">
+<label>Name <input type="text" name="name" placeholder="e.g. prod-app" required/></label>
+<button type="submit">Create key</button>
+</form>
+<p class="muted">The raw key is shown once, immediately after creation. Client keys only — create admin keys with the CLI.</p>
+</div>
+<table><thead><tr><th>Name</th><th>Prefix</th><th>Role</th><th>Status</th><th>Created</th><th>Expires</th><th></th></tr></thead><tbody>
+{{- if not .Keys}}
+<tr><td colspan="7" class="muted">No API keys yet.</td></tr>
+{{- end}}
+{{range .Keys}}
+<tr><td>{{.Name}}</td><td class="muted">{{.Prefix}}…</td><td>{{.Role}}</td><td><span class="status {{.Status | lower}}">{{.Status}}</span></td><td>{{.CreatedAt | fmtTime}}</td><td>{{if .ExpiresAt.Valid}}{{.ExpiresAt.Time | fmtTime}}{{else}}—{{end}}</td><td>{{if eq .Status "active"}}<form method="post" action="/admin/keys/{{.ID}}/revoke" style="display:inline;max-width:none"><button type="submit" style="background:#cf222e;padding:4px 10px;font-size:12px">Revoke</button></form>{{end}}</td></tr>
+{{- end}}
+</tbody></table>
+{{end}}`
+
+const keyCreatedSource = `{{define "content"}}
+<h1>Key created</h1>
+<p>Store this key securely now — it is shown <strong>only this once</strong> and cannot be retrieved again.</p>
+<div class="key-reveal">{{.RawKey}}</div>
+<p><a href="/admin/keys">Back to API keys</a></p>
 {{end}}`

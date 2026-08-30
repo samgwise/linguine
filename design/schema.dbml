@@ -98,7 +98,7 @@ Table request_audit_logs {
 
 Table admin_audit_logs {
   id          integer [pk, increment]
-  event       text [not null, note: 'Enum: login_failed, login_throttled, login_ok']
+  event       text [not null, note: 'Enum: login_failed, login_throttled, login_ok, key_created, key_revoked']
   api_key_id  text [ref: > api_keys.id, note: 'Nullable; the key id when identifiable']
   remote_ip   text [note: 'Source IP of the attempt']
   status_code integer [not null]

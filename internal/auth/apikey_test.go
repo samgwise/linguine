@@ -121,6 +121,39 @@ func TestAPIKeyRepoRevoke(t *testing.T) {
 	}
 }
 
+func TestAPIKeyRepoListNewestFirst(t *testing.T) {
+	repo := NewAPIKeyRepo(newAuthTestDB(t))
+	ctx := context.Background()
+	a, err := repo.Create(ctx, "first", GenerateAPIKey())
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	b, err := repo.Create(ctx, "second", GenerateAPIKey())
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	keys, err := repo.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("list: got %d keys, want 2", len(keys))
+	}
+	if keys[0].ID != b.ID || keys[1].ID != a.ID {
+		t.Errorf("list order: got %q, %q; want newest (%q) first", keys[0].ID, keys[1].ID, b.ID)
+	}
+	byID := map[string]APIKey{keys[0].ID: keys[0], keys[1].ID: keys[1]}
+	for _, id := range []string{a.ID, b.ID} {
+		k := byID[id]
+		if k.Status != "active" || k.Role != "client" || k.Prefix == "" || k.Name == "" {
+			t.Errorf("key %s: unexpected fields: %+v", id, k)
+		}
+		if k.CreatedAt.IsZero() {
+			t.Errorf("key %s: CreatedAt not populated", id)
+		}
+	}
+}
+
 func TestAPIKeyRepoRevokeUnknownID(t *testing.T) {
 	repo := NewAPIKeyRepo(newAuthTestDB(t))
 	if err := repo.Revoke(context.Background(), "00000000-0000-0000-0000-000000000000"); err == nil {

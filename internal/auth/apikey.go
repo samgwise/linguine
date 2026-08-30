@@ -42,6 +42,7 @@ type APIKey struct {
 	Role      string
 	Status    string
 	ExpiresAt sql.NullTime
+	CreatedAt time.Time
 }
 
 // GenerateAPIKey returns a fresh raw API key. It is shown once to the operator
@@ -154,13 +155,37 @@ func (r *APIKeyRepo) Create(ctx context.Context, name, raw string) (*APIKey, err
 		Role:   defaultKeyRole,
 		Status: "active",
 	}
+	// Timestamps are written explicitly: SQLite's CURRENT_TIMESTAMP has
+	// second granularity, which would make same-second creations tie on
+	// created_at and scramble newest-first ordering (ids are random UUIDs).
+	now := time.Now().UTC()
 	_, err = r.db.ExecContext(ctx,
-		`INSERT INTO api_keys (id, name, token_hash, prefix, role, status) VALUES (?, ?, ?, ?, ?, ?)`,
-		ak.ID, ak.Name, hash, ak.Prefix, ak.Role, ak.Status)
+		`INSERT INTO api_keys (id, name, token_hash, prefix, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		ak.ID, ak.Name, hash, ak.Prefix, ak.Role, ak.Status, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("auth: insert api key: %w", err)
 	}
 	return ak, nil
+}
+
+// List returns every API key, newest first, for the admin key-management
+// page. It never exposes token hashes or raw keys.
+func (r *APIKeyRepo) List(ctx context.Context) ([]APIKey, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, name, prefix, role, status, expires_at, created_at FROM api_keys ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("auth: list api keys: %w", err)
+	}
+	defer rows.Close()
+	var out []APIKey
+	for rows.Next() {
+		var ak APIKey
+		if err := rows.Scan(&ak.ID, &ak.Name, &ak.Prefix, &ak.Role, &ak.Status, &ak.ExpiresAt, &ak.CreatedAt); err != nil {
+			return nil, fmt.Errorf("auth: scan api key: %w", err)
+		}
+		out = append(out, ak)
+	}
+	return out, rows.Err()
 }
 
 // Verify resolves a bearer token to a valid (active, unexpired) API key. It

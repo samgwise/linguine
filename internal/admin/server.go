@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +51,7 @@ type Server struct {
 	listen        string
 	sessionSecret []byte
 	limiter       *loginLimiter
+	nonces        *nonceStore
 }
 
 // New constructs an admin dashboard server. Call Start to run it.
@@ -62,6 +64,7 @@ func New(deps Deps) *Server {
 		sessionSecret: deps.SessionSecret,
 		app:           fiber.New(),
 		limiter:       newLoginLimiter(loginLimit, loginWindow),
+		nonces:        newNonceStore(),
 	}
 	s.registerRoutes()
 	return s
@@ -86,6 +89,10 @@ func (s *Server) registerRoutes() {
 	s.app.Get("/admin/nodes", s.nodesPage)
 	s.app.Get("/admin/nodes/:id", s.nodeDetailPage)
 	s.app.Get("/admin/audit", s.auditPage)
+	s.app.Get("/admin/keys", s.keysPage)
+	s.app.Post("/admin/keys", s.keysCreate)
+	s.app.Get("/admin/keys/created", s.keyCreatedPage)
+	s.app.Post("/admin/keys/:id/revoke", s.keyRevoke)
 }
 
 // cspHeader sets a strict Content-Security-Policy on admin pages. htmx is
@@ -96,6 +103,9 @@ func (s *Server) registerRoutes() {
 func (s *Server) cspHeader(c fiber.Ctx) error {
 	c.Set(fiber.HeaderContentSecurityPolicy,
 		"default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'")
+	// The key-created page carries a single-use nonce in its URL; keep that
+	// URL out of Referer headers sent off-site.
+	c.Set(fiber.HeaderReferrerPolicy, "same-origin")
 	return c.Next()
 }
 
@@ -257,6 +267,74 @@ func (s *Server) auditPage(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).SendString("admin audit query failed")
 	}
 	return c.Type("html").SendString(auditPage(entries, adminEvents))
+}
+
+// keysPage renders the API key management page: a create form above a table
+// of every key (all roles and statuses). The list is read-only for raw
+// material — raw keys are shown exactly once, on the single-use created page.
+func (s *Server) keysPage(c fiber.Ctx) error {
+	keys, err := s.keys.List(c.Context())
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("key list query failed")
+	}
+	return c.Type("html").SendString(keysPage(keys, c.Query("error", "")))
+}
+
+// keysCreate mints a client API key, records the audit event, and redirects
+// to the single-use created page that shows the raw key once.
+func (s *Server) keysCreate(c fiber.Ctx) error {
+	name := strings.TrimSpace(c.FormValue("name"))
+	if name == "" {
+		return c.Redirect().Status(fiber.StatusSeeOther).To("/admin/keys?error=" + url.QueryEscape("name is required"))
+	}
+	raw := auth.GenerateAPIKey()
+	ak, err := s.keys.Create(c.Context(), name, raw)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("key create failed")
+	}
+	_ = s.audit.RecordAdminEvent(audit.AdminEvent{
+		Event:      "key_created",
+		APIKeyID:   ak.ID,
+		RemoteIP:   c.IP(),
+		StatusCode: fiber.StatusOK,
+	})
+	nonce, err := s.nonces.put(raw)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("key create failed")
+	}
+	return c.Redirect().Status(fiber.StatusSeeOther).To("/admin/keys/created?nonce=" + url.QueryEscape(nonce))
+}
+
+// keyCreatedPage shows the raw key exactly once: take() deletes the nonce so
+// refreshes and replays redirect back to the list. no-store keeps the key out
+// of browser and proxy caches.
+func (s *Server) keyCreatedPage(c fiber.Ctx) error {
+	raw, ok := s.nonces.take(c.Query("nonce"))
+	if !ok {
+		return c.Redirect().Status(fiber.StatusSeeOther).To("/admin/keys")
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.Type("html").SendString(keyCreatedPage(raw))
+}
+
+// keyRevoke flips a key to revoked immediately. The key that issued the
+// current session cannot revoke itself here — accidental self-lockout is
+// too easy (use the CLI if you really mean it).
+func (s *Server) keyRevoke(c fiber.Ctx) error {
+	id := c.Params("id")
+	if sessionID, _ := c.Locals("adminKeyID").(string); id == sessionID {
+		return c.Redirect().Status(fiber.StatusSeeOther).To("/admin/keys?error=" + url.QueryEscape("cannot revoke the key of your own session"))
+	}
+	if err := s.keys.Revoke(c.Context(), id); err != nil {
+		return c.Redirect().Status(fiber.StatusSeeOther).To("/admin/keys?error=" + url.QueryEscape("no such key"))
+	}
+	_ = s.audit.RecordAdminEvent(audit.AdminEvent{
+		Event:      "key_revoked",
+		APIKeyID:   id,
+		RemoteIP:   c.IP(),
+		StatusCode: fiber.StatusOK,
+	})
+	return c.Redirect().Status(fiber.StatusSeeOther).To("/admin/keys")
 }
 
 // issueSessionCookie returns `keyID|expiresUnix|hmac` for the given admin
