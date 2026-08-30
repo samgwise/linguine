@@ -30,9 +30,10 @@ linters:
         text: 'Error return value of .*(Close|Shutdown).*is not checked'
       # Unchecked writes to response writers / SSE streams / log writers: a
       # failed write usually means the client has disconnected and there is
-      # nothing useful to do with the error.
+      # nothing useful to do with the error. Includes the small-CLI case of
+      # printing to stdout/stderr via an io.Writer (e.g. `linguine version`).
       - linters: [errcheck]
-        text: 'Error return value of .*(Write|WriteString|Fprintf|Copy).*is not checked'
+        text: 'Error return value of .*(Write|WriteString|Fprintf|Fprintln|Copy).*is not checked'
       # Australian/British comment spellings per the project convention.
       - linters: [misspell]
         text: '`(artefact|behaviour|cancelled|dialling|finalised|honour|honours|serialise)` is a misspelling'
