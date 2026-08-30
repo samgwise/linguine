@@ -30,6 +30,36 @@ go build ./cmd/worker    # worker daemon
 
 Both binaries are self-contained (CGO-free SQLite via `modernc.org/sqlite`).
 
+## Deploying from CI (rolling latest)
+
+Every green push to `main` publishes a rolling GitHub release named
+`latest` (linux amd64/arm64 tarballs + sha256). A server can pull the newest
+build anonymously — no token, no API calls:
+
+```sh
+curl -fsSL -o linguine.tar.gz \
+  https://github.com/samgwise/linguine/releases/latest/download/linguine-linux-amd64.tar.gz
+curl -fsSL -o linguine.tar.gz.sha256 \
+  https://github.com/samgwise/linguine/releases/latest/download/linguine-linux-amd64.tar.gz.sha256
+sha256sum -c linguine.tar.gz.sha256 && tar -xzf linguine.tar.gz
+```
+
+Or use the helper script, which fetches, verifies, and stages the binaries
+(restarting the service stays with the server's own stack):
+
+```sh
+scripts/pull-latest.sh [amd64|arm64] [target-dir]
+```
+
+CI-built binaries report their build so you can always tell what is running:
+`./linguine version` and `./linguine-worker -version` print the short commit
+SHA (or the tag name for `v*` releases); local builds print `dev`.
+
+Note the `latest` release must remain a normal release (not a
+prerelease/draft) — GitHub's `releases/latest` redirect skips those. CI
+maintains this; the moving `latest` git tag is CI-managed and recreated on
+every publish.
+
 ## Quick start (single machine)
 
 Run the router and one worker on the same machine to prove the path

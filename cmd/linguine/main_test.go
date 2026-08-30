@@ -11,3 +11,11 @@ func TestAdminRevokeKeyRequiresID(t *testing.T) {
 		t.Errorf("missing --id: got %v", err)
 	}
 }
+
+func TestPrintVersion(t *testing.T) {
+	var buf strings.Builder
+	printVersion(&buf)
+	if got := strings.TrimSpace(buf.String()); got != version {
+		t.Errorf("printVersion = %q, want %q", got, version)
+	}
+}

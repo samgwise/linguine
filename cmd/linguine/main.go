@@ -6,6 +6,7 @@
 //	linguine [--config FILE] admin create-key --name <label>
 //	linguine [--config FILE] admin create-enrollment-token --node <label> [--ttl <duration>]
 //	linguine [--config FILE] admin revoke-key --id <api-key-id>
+//	linguine version
 //
 // Global flags (before the subcommand) are parsed by the top-level flag set.
 package main
@@ -15,6 +16,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/url"
@@ -32,6 +34,11 @@ import (
 	"github.com/samgw/linguine/internal/store"
 )
 
+// version is stamped at build time via -ldflags "-X main.version=..." by CI
+// (short SHA for main builds, tag name for v* releases); local builds report
+// "dev".
+var version = "dev"
+
 func main() {
 	fs := flag.NewFlagSet("linguine", flag.ExitOnError)
 	configPath := fs.String("config", "", "path to TOML config file")
@@ -47,6 +54,8 @@ func main() {
 		exitOnErr(serve(*configPath))
 	case "admin":
 		exitOnErr(admin(*configPath, args[1:]))
+	case "version":
+		printVersion(os.Stdout)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -56,6 +65,11 @@ func main() {
 	}
 }
 
+// printVersion writes the build version as a single line.
+func printVersion(w io.Writer) {
+	fmt.Fprintln(w, version)
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: linguine [--config FILE] <command> [flags]")
 	fmt.Fprintln(os.Stderr, "commands:")
@@ -63,6 +77,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  admin create-key                create an ingress API key")
 	fmt.Fprintln(os.Stderr, "  admin create-enrollment-token    create a worker enrollment token")
 	fmt.Fprintln(os.Stderr, "  admin revoke-key                 revoke an API key by id")
+	fmt.Fprintln(os.Stderr, "  version                         print the build version")
 }
 
 func exitOnErr(err error) {
@@ -73,6 +88,7 @@ func exitOnErr(err error) {
 }
 
 func serve(configPath string) error {
+	log.Printf("[linguine] version %s", version)
 	cfg, err := config.LoadRouter(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)

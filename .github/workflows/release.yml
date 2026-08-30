@@ -34,8 +34,10 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags '-s -w' -o dist/linguine ./cmd/linguine
-          go build -trimpath -ldflags '-s -w' -o dist/linguine-worker ./cmd/worker
+          # Tagged releases report the tag name (./linguine version).
+          LDFLAGS="-s -w -X main.version=${GITHUB_REF_NAME}"
+          go build -trimpath -ldflags "$LDFLAGS" -o dist/linguine ./cmd/linguine
+          go build -trimpath -ldflags "$LDFLAGS" -o dist/linguine-worker ./cmd/worker
       - name: Tarball + checksum
         run: |
           cd dist

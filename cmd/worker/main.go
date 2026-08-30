@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"log"
 	"net/url"
 	"os"
@@ -21,10 +22,20 @@ import (
 	"github.com/samgw/linguine/internal/worker"
 )
 
+// version is stamped at build time via -ldflags "-X main.version=..." by CI
+// (short SHA for main builds, tag name for v* releases); local builds report
+// "dev".
+var version = "dev"
+
 func main() {
 	fs := flag.NewFlagSet("worker", flag.ExitOnError)
 	configPath := fs.String("config", "", "path to TOML config file")
+	showVersion := fs.Bool("version", false, "print the build version and exit")
 	_ = fs.Parse(os.Args[1:])
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	cfg, err := config.LoadWorker(*configPath)
 	if err != nil {
@@ -61,7 +72,7 @@ func main() {
 			log.Printf("[linguine] daemon: %v", err)
 		}
 	}()
-	log.Printf("[linguine] worker %s connected to router %s, proxying to %s", cfg.NodeID, cfg.Router.NNGAddr, cfg.Engine.URL)
+	log.Printf("[linguine] worker %s (version %s) connected to router %s, proxying to %s", cfg.NodeID, version, cfg.Router.NNGAddr, cfg.Engine.URL)
 
 	<-ctx.Done()
 	log.Printf("[linguine] worker shutting down...")

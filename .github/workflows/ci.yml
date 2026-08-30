@@ -82,8 +82,11 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags '-s -w' -o dist/linguine ./cmd/linguine
-          go build -trimpath -ldflags '-s -w' -o dist/linguine-worker ./cmd/worker
+          # Stamp the short commit SHA so a deployed binary can identify its
+          # own build (./linguine version / ./linguine-worker -version).
+          LDFLAGS="-s -w -X main.version=${GITHUB_SHA::7}"
+          go build -trimpath -ldflags "$LDFLAGS" -o dist/linguine ./cmd/linguine
+          go build -trimpath -ldflags "$LDFLAGS" -o dist/linguine-worker ./cmd/worker
       - name: Tarball + checksum
         run: |
           cd dist
@@ -94,6 +97,48 @@ jobs:
         with:
           name: linguine-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/linguine-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz*
+
+  # Publish a rolling GitHub release named "latest" from the release-
+  # identical tarballs above, so a test deployment server can pull the
+  # newest green build of main anonymously (no token, no API calls):
+  #   https://github.com/<repo>/releases/latest/download/<asset>
+  #
+  # The release MUST stay a normal (non-prerelease, non-draft) release:
+  # GitHub's releases/latest redirect skips prereleases and drafts, so
+  # marking it prerelease would silently point the pull URL at the most
+  # recent v* release instead.
+  #
+  # The moving "latest" git tag is CI-managed: it is deleted and recreated
+  # on every publish, so don't build anything on it.
+  publish-latest:
+    name: Publish latest (rolling)
+    needs: [lint, build, test, release-artifacts]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Serialise publishes so two rapid pushes can't race on the
+    # delete-and-recreate; the workflow-level ci- group cancels superseded
+    # pushes anyway.
+    concurrency:
+      group: publish-latest
+      cancel-in-progress: true
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: linguine-*
+          merge-multiple: true
+          path: dist
+      - name: Replace rolling latest release
+        run: |
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest dist/*.tar.gz dist/*.tar.gz.sha256 \
+            --target "$GITHUB_SHA" \
+            --title "Latest build (main @ ${GITHUB_SHA::7})" \
+            --notes "Automated rolling build of main @ ${GITHUB_SHA::7}. This channel is replaced on every green push to main; for real releases use v* tags."
 
   test:
     name: Test
