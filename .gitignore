@@ -16,6 +16,9 @@ linguine-admin.key
 *.sqlite-wal
 *.sqlite-shm
 
+# Local runtime logs
+worker-test*.log
+
 # Editor / OS cruft
 .vscode/
 .idea/
