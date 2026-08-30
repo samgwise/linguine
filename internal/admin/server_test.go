@@ -199,6 +199,64 @@ func TestDashboardRendersAuditEmpty(t *testing.T) {
 	}
 }
 
+// TestNodesPageHtmxFragment asserts that the every-5s htmx poll of
+// /admin/nodes receives only the table fragment — a full page response would
+// be swapped inside the old table via outerHTML, nesting page chrome (header,
+// main) into the content on every refresh. Plain GETs and boosted navigation
+// clicks still receive the full page.
+func TestNodesPageHtmxFragment(t *testing.T) {
+	srv, _, adminKeyID := newTestServer(t)
+	cookie := srv.issueSessionCookie(adminKeyID)
+
+	// Plain GET: full page with chrome.
+	req := httptest.NewRequest("GET", "/admin/nodes", nil)
+	req.Header.Set("Cookie", cookieName+"="+cookie)
+	resp, err := srv.App().Test(req)
+	if err != nil {
+		t.Fatalf("plain get: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "<!DOCTYPE html>") {
+		t.Error("plain GET should return the full page")
+	}
+
+	// htmx poll: table fragment only, no chrome.
+	req2 := httptest.NewRequest("GET", "/admin/nodes", nil)
+	req2.Header.Set("Cookie", cookieName+"="+cookie)
+	req2.Header.Set("HX-Request", "true")
+	resp2, err := srv.App().Test(req2)
+	if err != nil {
+		t.Fatalf("htmx poll: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if strings.Contains(string(body2), "<!DOCTYPE html>") || strings.Contains(string(body2), "<header") || strings.Contains(string(body2), "<html") {
+		t.Error("htmx poll must receive a fragment, not the page chrome")
+	}
+	if !strings.Contains(string(body2), `hx-trigger="every 5s"`) {
+		t.Error("fragment should be the polling table itself")
+	}
+	if !strings.Contains(string(body2), "node-1") {
+		t.Error("fragment should render node rows")
+	}
+
+	// Boosted navigation (hx-boost on <body>): full page again.
+	req3 := httptest.NewRequest("GET", "/admin/nodes", nil)
+	req3.Header.Set("Cookie", cookieName+"="+cookie)
+	req3.Header.Set("HX-Request", "true")
+	req3.Header.Set("HX-Boosted", "true")
+	resp3, err := srv.App().Test(req3)
+	if err != nil {
+		t.Fatalf("boosted nav: %v", err)
+	}
+	body3, _ := io.ReadAll(resp3.Body)
+	resp3.Body.Close()
+	if !strings.Contains(string(body3), "<!DOCTYPE html>") {
+		t.Error("boosted navigation should still receive the full page")
+	}
+}
+
 // TestXSSRendering asserts that attacker-controlled node and audit fields are
 // HTML-escaped on the dashboard, never injected raw — the stored-XSS fix.
 func TestXSSRendering(t *testing.T) {

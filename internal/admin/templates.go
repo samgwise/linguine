@@ -144,6 +144,18 @@ func nodesPage(nodes []fleet.NodeView) string {
 	return renderPage(nodesTmpl, nodesData{pageData: pageData{Title: "Nodes"}, Nodes: nodes})
 }
 
+// nodesFragment renders only the polling table, for the htmx every-5s
+// self-poll (hx-swap="outerHTML"). Full pages stay reserved for navigation;
+// a fragment response must not carry the page chrome or each poll would
+// nest another header into the table.
+func nodesFragment(nodes []fleet.NodeView) string {
+	var b strings.Builder
+	if err := nodesTmpl.ExecuteTemplate(&b, "nodes_table", nodesData{Nodes: nodes}); err != nil {
+		return "admin: render error: " + err.Error()
+	}
+	return b.String()
+}
+
 // nodeDetailData is the structured payload for a single node's detail page.
 type nodeDetailData struct {
 	pageData
@@ -210,8 +222,9 @@ const homeSource = `{{define "content"}}
 </tbody></table>
 {{end}}`
 
-const nodesSource = `{{define "content"}}
-<h1>Node inventory</h1>
+// nodesTableSource is the fragment polled by htmx; it is also embedded in the
+// full nodes page via the "content" block below, so the two always stay in sync.
+const nodesTableSource = `{{define "nodes_table"}}
 <table hx-trigger="every 5s" hx-get="/admin/nodes" hx-target="this" hx-swap="outerHTML"><thead><tr><th>Node</th><th>Status</th><th>Active model</th><th>VRAM free / total (MB)</th><th>Active reqs</th><th>Est. TPS</th><th>Catalog</th><th>Last heartbeat</th></tr></thead><tbody>
 {{- if not .Nodes}}
 <tr><td colspan="8" class="muted">No workers enrolled.</td></tr>
@@ -221,6 +234,11 @@ const nodesSource = `{{define "content"}}
 {{- end}}
 </tbody></table>
 {{end}}`
+
+const nodesSource = `{{define "content"}}
+<h1>Node inventory</h1>
+{{template "nodes_table" .}}
+{{end}}` + nodesTableSource
 
 const nodeDetailSource = `{{define "content"}}
 <h1>{{.N.ID}}</h1>

@@ -219,7 +219,21 @@ func (s *Server) home(c fiber.Ctx) error {
 	return c.Type("html").SendString(homePage(nodes, online))
 }
 
+// isFragmentRequest reports whether the request comes from an htmx poll
+// expecting a content fragment rather than a full page. Boosted navigation
+// clicks also send HX-Request, but they set HX-Boosted and still need the
+// full-page chrome to swap the document.
+func isFragmentRequest(c fiber.Ctx) bool {
+	return c.Get("HX-Request") == "true" && c.Get("HX-Boosted") != "true"
+}
+
 func (s *Server) nodesPage(c fiber.Ctx) error {
+	if isFragmentRequest(c) {
+		// The table polls itself every 5s with hx-swap="outerHTML"; returning
+		// the full page here would nest page chrome inside the table on every
+		// refresh.
+		return c.Type("html").SendString(nodesFragment(s.nodes()))
+	}
 	return c.Type("html").SendString(nodesPage(s.nodes()))
 }
 
