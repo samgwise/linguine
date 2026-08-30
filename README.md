@@ -81,7 +81,15 @@ linguine admin create-key --name "prod-app"          # client key (sk-mesh-…)
 linguine admin create-key --name "operator" --role admin  # admin key (sk-mesh-…)
 ```
 
-Each key is shown **once** — store it securely immediately.
+Each key is shown **once** — store it securely immediately. To revoke a
+compromised or retired key (id is printed at creation):
+
+```sh
+linguine admin revoke-key --id <api-key-id>
+```
+
+Revocation takes effect immediately: `/v1` calls fail on their next use and
+admin dashboard sessions die on the next request.
 
 ### 3. Create a worker enrollment token
 

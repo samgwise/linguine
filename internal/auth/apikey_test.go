@@ -103,6 +103,31 @@ func TestAPIKeyRepoRevoked(t *testing.T) {
 	}
 }
 
+func TestAPIKeyRepoRevoke(t *testing.T) {
+	repo := NewAPIKeyRepo(newAuthTestDB(t))
+	raw := GenerateAPIKey()
+	ak, err := repo.Create(context.Background(), "k", raw)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := repo.Revoke(context.Background(), ak.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if _, err := repo.Verify(context.Background(), raw); err == nil {
+		t.Error("revoked key should not verify")
+	}
+	if ok, err := repo.ActiveByID(context.Background(), ak.ID); err != nil || ok {
+		t.Errorf("ActiveByID after revoke: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestAPIKeyRepoRevokeUnknownID(t *testing.T) {
+	repo := NewAPIKeyRepo(newAuthTestDB(t))
+	if err := repo.Revoke(context.Background(), "00000000-0000-0000-0000-000000000000"); err == nil {
+		t.Error("revoking an unknown key id should error")
+	}
+}
+
 func TestAPIKeyRepoExpired(t *testing.T) {
 	db := newAuthTestDB(t)
 	repo := NewAPIKeyRepo(db)

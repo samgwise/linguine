@@ -200,6 +200,26 @@ func (r *APIKeyRepo) Verify(ctx context.Context, bearer string) (*APIKey, error)
 	return nil, ErrInvalidAPIKey
 }
 
+// Revoke flips a key's status to 'revoked' so Verify and ActiveByID reject it
+// immediately — /v1 bearer tokens fail on their next use, and admin dashboard
+// sessions die on their next request (requireSession re-checks ActiveByID).
+// Revoking is idempotent; it errors only when no key exists with the given id.
+func (r *APIKeyRepo) Revoke(ctx context.Context, id string) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE api_keys SET status = 'revoked', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("auth: revoke api key: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: revoke api key: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("auth: no api key with id %s", id)
+	}
+	return nil
+}
+
 // ActiveByID reports whether the api key id is present, active and unexpired.
 // It lets the admin dashboard re-verify a session's key on every request so
 // that revoking or expiring an admin key kills its outstanding sessions

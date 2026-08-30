@@ -5,6 +5,7 @@
 //	linguine [--config FILE] serve
 //	linguine [--config FILE] admin create-key --name <label>
 //	linguine [--config FILE] admin create-enrollment-token --node <label> [--ttl <duration>]
+//	linguine [--config FILE] admin revoke-key --id <api-key-id>
 //
 // Global flags (before the subcommand) are parsed by the top-level flag set.
 package main
@@ -61,6 +62,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  serve                          run the central router (default)")
 	fmt.Fprintln(os.Stderr, "  admin create-key                create an ingress API key")
 	fmt.Fprintln(os.Stderr, "  admin create-enrollment-token    create a worker enrollment token")
+	fmt.Fprintln(os.Stderr, "  admin revoke-key                 revoke an API key by id")
 }
 
 func exitOnErr(err error) {
@@ -149,13 +151,15 @@ func serve(configPath string) error {
 
 func admin(configPath string, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("admin requires a subcommand: create-key | create-enrollment-token")
+		return fmt.Errorf("admin requires a subcommand: create-key | create-enrollment-token | revoke-key")
 	}
 	switch args[0] {
 	case "create-key":
 		return adminCreateKey(configPath, args[1:])
 	case "create-enrollment-token":
 		return adminCreateEnrollment(configPath, args[1:])
+	case "revoke-key":
+		return adminRevokeKey(configPath, args[1:])
 	default:
 		return fmt.Errorf("unknown admin command %q", args[0])
 	}
@@ -231,6 +235,33 @@ func adminCreateEnrollment(configPath string, args []string) error {
 		return fmt.Errorf("create enrollment token: %w", err)
 	}
 	fmt.Printf("Enrollment token (shown once — pass it to the worker):\n  %s\nid:    %s\nnode:  %s\n", token, et.ID, et.NodeName)
+	return nil
+}
+
+func adminRevokeKey(configPath string, args []string) error {
+	fs := flag.NewFlagSet("admin revoke-key", flag.ExitOnError)
+	id := fs.String("id", "", "id of the API key to revoke (from create-key output)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *id == "" {
+		return fmt.Errorf("--id is required")
+	}
+	cfg, err := config.LoadRouter(configPath)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, cfg.DB.Path)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer st.Close()
+
+	if err := auth.NewAPIKeyRepo(st.DB()).Revoke(ctx, *id); err != nil {
+		return err
+	}
+	fmt.Printf("API key %s revoked. Existing /v1 calls with it now fail; admin sessions die on next dashboard request.\n", *id)
 	return nil
 }
 
