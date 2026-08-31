@@ -60,6 +60,64 @@ prerelease/draft) — GitHub's `releases/latest` redirect skips those. CI
 maintains this; the moving `latest` git tag is CI-managed and recreated on
 every publish.
 
+### Automatic self-deployment (server-side)
+
+For a server that tracks `main` (a testing/staging box), two small scripts
+turn the pull into a hands-off loop. They live outside this repo's build
+artifacts — copy them to the server once, e.g. into `~/linguine/bin/`:
+
+- `deploy.sh` — pulls via `pull-latest.sh`, swaps the binaries (keeping
+  rollback copies), restarts the service, and rolls back if it fails to
+  start. It assumes a `linguine.service` systemd **user** unit; adjust
+  `SERVICE=` inside if yours differs.
+- `autoupdate.sh` — polls the release's `.sha256` asset (~100 bytes),
+  compares it to a stamp file (`~/linguine/.deployed-sha256`), and runs
+  `deploy.sh` only when the checksum changed. A failed deploy leaves the old
+  stamp so the next cycle retries. Override `LINGUINE_BIN_DIR`,
+  `LINGUINE_STAMP`, or `LINGUINE_ARCH` via environment if needed.
+
+Drive `autoupdate.sh` with a systemd user timer (requires lingering so it
+runs while logged out — `sudo loginctl enable-linger $USER`):
+
+```ini
+# ~/.config/systemd/user/linguine-update.service
+[Unit]
+Description=Pull and deploy newest linguine build if changed
+
+[Service]
+Type=oneshot
+ExecStart=%h/linguine/bin/autoupdate.sh
+```
+
+```ini
+# ~/.config/systemd/user/linguine-update.timer
+[Unit]
+Description=Check for new linguine builds
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target
+```
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now linguine-update.timer
+```
+
+The full loop then becomes: push to `main` → CI green → rolling `latest`
+updated → the server self-deploys within one poll interval. To pin a server
+instead (production), stop the timer and deploy specific `v*` releases by
+tag.
+
+The checksum verifies the download's integrity only — both tarball and
+checksum come from the same release, so authenticity would need signed
+releases. Fine for a testing box; reconsider before auto-deploying
+critical infrastructure.
+
 ## Quick start (single machine)
 
 Run the router and one worker on the same machine to prove the path

@@ -6,7 +6,10 @@
 #
 # This script deliberately does NOT restart or manage any services — picking
 # up a new build (e.g. systemctl restart linguine) is the server's own
-# configuration/stack responsibility.
+# configuration/stack responsibility. A paired deploy.sh (pull, swap,
+# restart, roll back) and an autoupdate.sh (poll-and-deploy-on-change) that
+# build on this are described in the README's "Automatic self-deployment"
+# section.
 set -euo pipefail
 
 REPO="samgwise/linguine"
