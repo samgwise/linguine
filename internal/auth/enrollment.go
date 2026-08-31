@@ -17,6 +17,7 @@ type EnrollmentToken struct {
 	NodeName  string
 	Status    string
 	ExpiresAt sql.NullTime
+	CreatedAt time.Time
 }
 
 // EnrollmentRepo maps worker onboarding tokens to the node_enrollment_tokens
@@ -35,17 +36,59 @@ func NewEnrollmentRepo(db *sql.DB, signer *Signer) *EnrollmentRepo {
 // once to the operator). A ttl of 0 means no expiry.
 func (r *EnrollmentRepo) Create(ctx context.Context, nodeName string, ttl time.Duration) (*EnrollmentToken, string, error) {
 	id := uuid.NewString()
-	expiresAt := sql.NullTime{Time: effectiveExpiry(time.Now(), ttl).UTC(), Valid: true}
+	now := time.Now().UTC()
+	expiresAt := sql.NullTime{Time: effectiveExpiry(now, ttl).UTC(), Valid: true}
 	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO node_enrollment_tokens (id, node_name, status, expires_at) VALUES (?, ?, 'active', ?)`,
-		id, nodeName, expiresAt); err != nil {
+		`INSERT INTO node_enrollment_tokens (id, node_name, status, expires_at, created_at) VALUES (?, ?, 'active', ?, ?)`,
+		id, nodeName, expiresAt, now); err != nil {
 		return nil, "", fmt.Errorf("auth: insert enrollment token: %w", err)
 	}
 	tok, err := r.signer.Issue(ctx, id, nodeName, ttl)
 	if err != nil {
 		return nil, "", err
 	}
-	return &EnrollmentToken{ID: id, NodeName: nodeName, Status: "active", ExpiresAt: expiresAt}, tok, nil
+	return &EnrollmentToken{ID: id, NodeName: nodeName, Status: "active", ExpiresAt: expiresAt, CreatedAt: now}, tok, nil
+}
+
+// List returns every enrollment token, newest first, for the admin worker-key
+// management page. It never exposes the raw PASETO (which was shown once at
+// creation and is not stored).
+func (r *EnrollmentRepo) List(ctx context.Context) ([]EnrollmentToken, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, node_name, status, expires_at, created_at FROM node_enrollment_tokens ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("auth: list enrollment tokens: %w", err)
+	}
+	defer rows.Close()
+	var out []EnrollmentToken
+	for rows.Next() {
+		var et EnrollmentToken
+		if err := rows.Scan(&et.ID, &et.NodeName, &et.Status, &et.ExpiresAt, &et.CreatedAt); err != nil {
+			return nil, fmt.Errorf("auth: scan enrollment token: %w", err)
+		}
+		out = append(out, et)
+	}
+	return out, rows.Err()
+}
+
+// Revoke flips an enrollment token's status to 'revoked' so IsActive (and
+// therefore the router's per-heartbeat check) rejects it immediately — a
+// connected worker is dropped on its next heartbeat. Revoking is idempotent;
+// it errors only when no token exists with the given id.
+func (r *EnrollmentRepo) Revoke(ctx context.Context, id string) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE node_enrollment_tokens SET status = 'revoked' WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("auth: revoke enrollment token: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: revoke enrollment token: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("auth: no enrollment token with id %s", id)
+	}
+	return nil
 }
 
 // IsActive reports whether the enrollment token id is present, active and

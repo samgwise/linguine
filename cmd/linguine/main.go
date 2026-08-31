@@ -149,6 +149,7 @@ func serve(configPath string) error {
 	}
 	adminSrv := adminpkg.New(adminpkg.Deps{
 		Keys:          auth.NewAPIKeyRepo(st.DB()),
+		Enrollments:   auth.NewEnrollmentRepo(st.DB(), signer),
 		Audit:         auditRepo,
 		Nodes:         srv.NodesSnapshot,
 		Claims:        srv.ClaimsSnapshot,

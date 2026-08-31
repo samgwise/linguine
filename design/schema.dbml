@@ -98,8 +98,9 @@ Table request_audit_logs {
 
 Table admin_audit_logs {
   id          integer [pk, increment]
-  event       text [not null, note: 'Enum: login_failed, login_throttled, login_ok, key_created, key_revoked']
+  event       text [not null, note: 'Enum: login_failed, login_throttled, login_ok, key_created, key_revoked, enrollment_created, enrollment_revoked']
   api_key_id  text [ref: > api_keys.id, note: 'Nullable; the key id when identifiable']
+  detail      text [note: 'Nullable; event-specific context (e.g. worker enrolment token id + node name, whose ids are not API keys)']
   remote_ip   text [note: 'Source IP of the attempt']
   status_code integer [not null]
   created_at  datetime [not null, default: `CURRENT_TIMESTAMP`]

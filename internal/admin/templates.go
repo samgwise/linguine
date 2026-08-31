@@ -26,6 +26,10 @@ var funcMap = template.FuncMap{
 	"join":    func(xs []string) string { return strings.Join(xs, ", ") },
 	"lower":   strings.ToLower,
 	"orDash":  orDash,
+	// never reports whether a token's expiry is so far in the future that it
+	// is effectively non-expiring (EnrollmentRepo stores 100 years out for
+	// ttl == 0 rather than a NULL expiry).
+	"never":   func(t time.Time) bool { return t.After(time.Now().AddDate(50, 0, 0)) },
 	"shortID": shortID,
 	// statusLabel appends a claim's rejection reason to the status badge
 	// text (e.g. "connecting (auth_failed)").
@@ -72,7 +76,8 @@ td { font-variant-numeric: tabular-nums; }
 .metric .v { font-size: 28px; font-weight: 700; }
 .metric .l { color: #57606a; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
 form { display: flex; flex-direction: column; gap: 12px; max-width: 320px; }
-input { padding: 8px 10px; border: 1px solid #d0d7de; border-radius: 6px; font: inherit; }
+input, select { padding: 8px 10px; border: 1px solid #d0d7de; border-radius: 6px; font: inherit; background: #fff; }
+.snippet { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-size: 13px; }
 button { padding: 8px 16px; border: 0; border-radius: 6px; background: #1f6feb; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
 .muted { color: #57606a; }
 a { color: #0969da; }
@@ -85,6 +90,7 @@ a { color: #0969da; }
 <a href="/admin/nodes">Nodes</a>
 <a href="/admin/audit">Audit log</a>
 <a href="/admin/keys">API keys</a>
+<a href="/admin/worker-keys">Worker keys</a>
 <form method="post" action="/admin/logout" style="display:inline"><button type="submit" style="background:#636c76">Sign out</button></form>
 </header>
 <main>
@@ -103,13 +109,15 @@ func mustPage(contentSrc string) *template.Template {
 }
 
 var (
-	homeTmpl       = mustPage(homeSource)
-	nodesTmpl      = mustPage(nodesSource)
-	nodeDetailTmpl = mustPage(nodeDetailSource)
-	auditTmpl      = mustPage(auditSource)
-	loginTmpl      = mustPage(loginSource)
-	keysTmpl       = mustPage(keysSource)
-	keyCreatedTmpl = mustPage(keyCreatedSource)
+	homeTmpl             = mustPage(homeSource)
+	nodesTmpl            = mustPage(nodesSource)
+	nodeDetailTmpl       = mustPage(nodeDetailSource)
+	auditTmpl            = mustPage(auditSource)
+	loginTmpl            = mustPage(loginSource)
+	keysTmpl             = mustPage(keysSource)
+	keyCreatedTmpl       = mustPage(keyCreatedSource)
+	workerKeysTmpl       = mustPage(workerKeysSource)
+	workerKeyCreatedTmpl = mustPage(workerKeyCreatedSource)
 )
 
 func renderPage(tmpl *template.Template, data any) string {
@@ -212,6 +220,41 @@ func keyCreatedPage(raw string) string {
 	}{pageData: pageData{Title: "Key created"}, RawKey: raw})
 }
 
+// workerKeysData carries the enrolment token list plus an optional error
+// flash (e.g. a missing node name) shown at the top of the page.
+type workerKeysData struct {
+	pageData
+	Tokens []auth.EnrollmentToken
+	TTLs   []workerKeyTTLChoice
+	Error  string
+}
+
+func workerKeysPage(toks []auth.EnrollmentToken, errFlash string) string {
+	return renderPage(workerKeysTmpl, workerKeysData{
+		pageData: pageData{Title: "Worker keys"},
+		Tokens:   toks,
+		TTLs:     workerKeyTTLs,
+		Error:    errFlash,
+	})
+}
+
+// workerKeyCreatedData carries the single-use reveal: the raw PASETO, the
+// node name it was minted for (echoed back through the redirect so the
+// config snippet can prefill node_id), and the matching TOML snippet.
+type workerKeyCreatedData struct {
+	pageData
+	NodeName string
+	RawToken string
+}
+
+func workerKeyCreatedPage(nodeName, raw string) string {
+	return renderPage(workerKeyCreatedTmpl, workerKeyCreatedData{
+		pageData: pageData{Title: "Worker key created"},
+		NodeName: nodeName,
+		RawToken: raw,
+	})
+}
+
 // auditData is the structured payload for the audit page: recent request
 // audit log entries plus recent admin auth events.
 type auditData struct {
@@ -311,12 +354,12 @@ const auditSource = `{{define "content"}}
 {{- end}}
 </tbody></table>
 <h2>Admin auth events</h2>
-<table><thead><tr><th>Time</th><th>Event</th><th>API key</th><th>Remote IP</th><th>Status</th></tr></thead><tbody>
+<table><thead><tr><th>Time</th><th>Event</th><th>API key</th><th>Detail</th><th>Remote IP</th><th>Status</th></tr></thead><tbody>
 {{- if not .AdminEvents}}
-<tr><td colspan="5" class="muted">No admin events recorded yet.</td></tr>
+<tr><td colspan="6" class="muted">No admin events recorded yet.</td></tr>
 {{- end}}
 {{range .AdminEvents}}
-<tr><td>{{.CreatedAt | fmtTime}}</td><td>{{.Event}}</td><td class="muted">{{.APIKeyID | shortID}}</td><td>{{.RemoteIP | orDash}}</td><td>{{.StatusCode}}</td></tr>
+<tr><td>{{.CreatedAt | fmtTime}}</td><td>{{.Event}}</td><td class="muted">{{.APIKeyID | shortID}}</td><td>{{.Detail | orDash}}</td><td>{{.RemoteIP | orDash}}</td><td>{{.StatusCode}}</td></tr>
 {{- end}}
 </tbody></table>
 {{end}}`
@@ -349,4 +392,47 @@ const keyCreatedSource = `{{define "content"}}
 <p>Store this key securely now — it is shown <strong>only this once</strong> and cannot be retrieved again.</p>
 <div class="key-reveal">{{.RawKey}}</div>
 <p><a href="/admin/keys">Back to API keys</a></p>
+{{end}}`
+
+const workerKeysSource = `{{define "content"}}
+{{- if .Error}}
+<div class="error">{{.Error}}</div>
+{{- end}}
+<h1>Worker keys</h1>
+<div class="card">
+<h2>Create a worker enrolment token</h2>
+<form method="post" action="/admin/worker-keys">
+<label>Node name <input type="text" name="node" placeholder="e.g. gpu-melbourne-01" required/></label>
+<label>Expires in <select name="ttl">
+{{range .TTLs}}<option value="{{.Value}}"{{if eq .Value "none"}} selected{{end}}>{{.Label}}</option>
+{{end}}</select></label>
+<button type="submit">Create token</button>
+</form>
+<p class="muted">The raw token is shown once, immediately after creation, with a ready-to-paste worker config. Worker keys enrol machines on the mesh — client keys for <code>/v1</code> requests live on the API keys page.</p>
+</div>
+<table><thead><tr><th>Node</th><th>Status</th><th>Created</th><th>Expires</th><th></th></tr></thead><tbody>
+{{- if not .Tokens}}
+<tr><td colspan="5" class="muted">No worker keys yet.</td></tr>
+{{- end}}
+{{range .Tokens}}
+<tr><td>{{.NodeName}}</td><td><span class="status {{.Status | lower}}">{{.Status}}</span></td><td>{{.CreatedAt | fmtTime}}</td><td>{{if .ExpiresAt.Valid}}{{if never .ExpiresAt.Time}}never{{else}}{{.ExpiresAt.Time | fmtTime}}{{end}}{{else}}—{{end}}</td><td>{{if eq .Status "active"}}<form method="post" action="/admin/worker-keys/{{.ID}}/revoke" style="display:inline;max-width:none"><button type="submit" style="background:#cf222e;padding:4px 10px;font-size:12px">Revoke</button></form>{{end}}</td></tr>
+{{- end}}
+</tbody></table>
+{{end}}`
+
+const workerKeyCreatedSource = `{{define "content"}}
+<h1>Worker key created</h1>
+<p>Enrolment token for <strong>{{.NodeName}}</strong>. Store it securely now — it is shown <strong>only this once</strong> and cannot be retrieved again.</p>
+<div class="key-reveal">{{.RawToken}}</div>
+<h2>Worker config</h2>
+<p class="muted">Paste into the worker's TOML, set <code>router.nng_addr</code> to this router's mesh address, then start the worker:</p>
+<pre class="snippet">node_id = "{{.NodeName}}"
+enrollment_token = "{{.RawToken}}"
+
+[router]
+nng_addr = "wss://&lt;router-host&gt;:9000/mesh"
+
+[engine]
+url = "http://127.0.0.1:8080/v1/chat/completions"</pre>
+<p><a href="/admin/worker-keys">Back to worker keys</a></p>
 {{end}}`

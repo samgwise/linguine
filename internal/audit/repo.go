@@ -219,10 +219,11 @@ var ErrClosed = errors.New("audit: repo closed")
 // backpressure constraints.
 type AdminEvent struct {
 	ID         int64
-	Event      string // login_failed | login_throttled | login_ok
+	Event      string // login_failed | login_throttled | login_ok | key_created | key_revoked | enrollment_created | enrollment_revoked
 	APIKeyID   string
 	RemoteIP   string
 	StatusCode int
+	Detail     string // event-specific context, e.g. the node name of an enrolment token
 	CreatedAt  time.Time
 }
 
@@ -232,8 +233,8 @@ type AdminEvent struct {
 // intrusion detection.
 func (r *Repo) RecordAdminEvent(e AdminEvent) error {
 	if _, err := r.db.Exec(
-		`INSERT INTO admin_audit_logs (event, api_key_id, remote_ip, status_code) VALUES (?, ?, ?, ?)`,
-		e.Event, nullable(e.APIKeyID), nullable(e.RemoteIP), e.StatusCode,
+		`INSERT INTO admin_audit_logs (event, api_key_id, remote_ip, status_code, detail) VALUES (?, ?, ?, ?, ?)`,
+		e.Event, nullable(e.APIKeyID), nullable(e.RemoteIP), e.StatusCode, nullable(e.Detail),
 	); err != nil {
 		return fmt.Errorf("audit: insert admin event: %w", err)
 	}
@@ -247,7 +248,7 @@ func (r *Repo) RecentAdminEvents(ctx context.Context, limit int) ([]AdminEvent, 
 		limit = 50
 	}
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, event, api_key_id, remote_ip, status_code, created_at
+		`SELECT id, event, api_key_id, remote_ip, status_code, detail, created_at
 		 FROM admin_audit_logs ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("audit: query admin events: %w", err)
@@ -256,13 +257,14 @@ func (r *Repo) RecentAdminEvents(ctx context.Context, limit int) ([]AdminEvent, 
 	var out []AdminEvent
 	for rows.Next() {
 		var e AdminEvent
-		var apiKeyID, remoteIP sql.NullString
+		var apiKeyID, remoteIP, detail sql.NullString
 		var created sql.NullTime
-		if err := rows.Scan(&e.ID, &e.Event, &apiKeyID, &remoteIP, &e.StatusCode, &created); err != nil {
+		if err := rows.Scan(&e.ID, &e.Event, &apiKeyID, &remoteIP, &e.StatusCode, &detail, &created); err != nil {
 			return nil, fmt.Errorf("audit: scan admin event: %w", err)
 		}
 		e.APIKeyID = apiKeyID.String
 		e.RemoteIP = remoteIP.String
+		e.Detail = detail.String
 		if created.Valid {
 			e.CreatedAt = created.Time
 		}

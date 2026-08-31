@@ -65,6 +65,7 @@ func newTestServer(t *testing.T) (*Server, *sql.DB, string) {
 	}
 	srv := New(Deps{
 		Keys:          keys,
+		Enrollments:   auth.NewEnrollmentRepo(db, auth.NewRandomSigner()),
 		Audit:         auditRepo,
 		Nodes:         nodes,
 		Listen:        "127.0.0.1:0",
@@ -694,6 +695,7 @@ func TestPagesServeTextHTML(t *testing.T) {
 		{"nodes", "/admin/nodes", true},
 		{"node detail", "/admin/nodes/node-1", true},
 		{"audit", "/admin/audit", true},
+		{"worker keys", "/admin/worker-keys", true},
 	}
 	for _, tc := range cases {
 		req := httptest.NewRequest("GET", tc.path, nil)
@@ -708,6 +710,235 @@ func TestPagesServeTextHTML(t *testing.T) {
 		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 			t.Errorf("%s page Content-Type: got %q, want text/html (browsers will download the page)", tc.name, ct)
 		}
+	}
+}
+
+// TestWorkerKeysPageRequiresSession asserts the worker-keys page sits behind
+// the session guard like every other dashboard page.
+func TestWorkerKeysPageRequiresSession(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	req := httptest.NewRequest("GET", "/admin/worker-keys", nil)
+	resp, err := srv.App().Test(req)
+	if err != nil {
+		t.Fatalf("app test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("status: got %d, want %d", resp.StatusCode, http.StatusSeeOther)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/admin/login" {
+		t.Errorf("location: got %q want /admin/login", loc)
+	}
+}
+
+// TestWorkerKeysCreateFlow walks the full enrolment mint path: POST creates a
+// token row, the nonce page reveals the raw PASETO exactly once alongside a
+// paste-ready config snippet, a replayed link reveals nothing, the raw token
+// never appears on the list page.
+func TestWorkerKeysCreateFlow(t *testing.T) {
+	srv, db, adminKeyID := newTestServer(t)
+	cookie := srv.issueSessionCookie(adminKeyID)
+
+	req := httptest.NewRequest("POST", "/admin/worker-keys", strings.NewReader("node=gpu-loopback&ttl=24h"))
+	req.Header.Set("Cookie", cookieName+"="+cookie)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := srv.App().Test(req)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("create: got %d, want %d", resp.StatusCode, http.StatusSeeOther)
+	}
+	loc := resp.Header.Get("Location")
+	if !strings.HasPrefix(loc, "/admin/worker-keys/created?node=gpu-loopback&nonce=") {
+		t.Fatalf("create redirect: got %q", loc)
+	}
+
+	// First view: the raw token and the config snippet, exactly once.
+	req2 := httptest.NewRequest("GET", loc, nil)
+	req2.Header.Set("Cookie", cookieName+"="+cookie)
+	resp2, err := srv.App().Test(req2)
+	if err != nil {
+		t.Fatalf("created page: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("created page: got %d, want %d", resp2.StatusCode, http.StatusOK)
+	}
+	if cc := resp2.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("created page Cache-Control: got %q, want no-store", cc)
+	}
+	m := regexp.MustCompile(`v4\.public\.[A-Za-z0-9_-]+`).FindString(string(body2))
+	if m == "" {
+		t.Fatal("created page did not reveal the raw enrolment token")
+	}
+	if got := strings.Count(string(body2), m); got != 2 {
+		t.Errorf("raw token should appear exactly twice (reveal + snippet), got %d", got)
+	}
+	if !strings.Contains(string(body2), `node_id = "gpu-loopback"`) {
+		t.Error("created page should show a config snippet with the node id")
+	}
+	if !strings.Contains(string(body2), `enrollment_token = "`) {
+		t.Error("created page should show a config snippet with the token slot")
+	}
+
+	// Replay: same URL reveals nothing.
+	req3 := httptest.NewRequest("GET", loc, nil)
+	req3.Header.Set("Cookie", cookieName+"="+cookie)
+	resp3, err := srv.App().Test(req3)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusSeeOther || resp3.Header.Get("Location") != "/admin/worker-keys" {
+		t.Errorf("replay: got %d (location %q), want 303 to /admin/worker-keys", resp3.StatusCode, resp3.Header.Get("Location"))
+	}
+
+	// The list page shows the token row but never the raw PASETO.
+	req4 := httptest.NewRequest("GET", "/admin/worker-keys", nil)
+	req4.Header.Set("Cookie", cookieName+"="+cookie)
+	resp4, err := srv.App().Test(req4)
+	if err != nil {
+		t.Fatalf("list after create: %v", err)
+	}
+	body4, _ := io.ReadAll(resp4.Body)
+	resp4.Body.Close()
+	if !strings.Contains(string(body4), "gpu-loopback") {
+		t.Error("worker keys page should render the token row")
+	}
+	if strings.Contains(string(body4), m) {
+		t.Error("raw enrolment token must never appear on the list page")
+	}
+	var etID string
+	if err := db.QueryRow(`SELECT id FROM node_enrollment_tokens WHERE node_name = 'gpu-loopback'`).Scan(&etID); err != nil {
+		t.Fatalf("query enrollment row: %v", err)
+	}
+	// Audit event recorded with the token id + node name as detail.
+	var detail string
+	if err := db.QueryRow(`SELECT detail FROM admin_audit_logs WHERE event = 'enrollment_created'`).Scan(&detail); err != nil || !strings.Contains(detail, etID) || !strings.Contains(detail, "gpu-loopback") {
+		t.Errorf("enrollment_created audit rows: got detail %q, err %v; want id %s + node name", detail, err, etID)
+	}
+}
+
+// TestWorkerKeysCreateDefaultTTL checks that submitting the form with no ttl
+// value (the browser's default selection) yields a token whose expiry is the
+// far-future stand-in for "no expiry".
+func TestWorkerKeysCreateDefaultTTL(t *testing.T) {
+	srv, db, adminKeyID := newTestServer(t)
+	cookie := srv.issueSessionCookie(adminKeyID)
+
+	req := httptest.NewRequest("POST", "/admin/worker-keys", strings.NewReader("node=gpu-default"))
+	req.Header.Set("Cookie", cookieName+"="+cookie)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := srv.App().Test(req)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("create: got %d, want %d", resp.StatusCode, http.StatusSeeOther)
+	}
+	var expires time.Time
+	if err := db.QueryRow(`SELECT expires_at FROM node_enrollment_tokens WHERE node_name = 'gpu-default'`).Scan(&expires); err != nil {
+		t.Fatalf("query enrollment row: %v", err)
+	}
+	if want := time.Now().AddDate(99, 0, 0); expires.Before(want) {
+		t.Errorf("default ttl: expires_at %v should be the far-future no-expiry stand-in (>= %v)", expires, want)
+	}
+}
+
+// TestWorkerKeysCreateValidation covers the two error-flash paths: a missing
+// node name and a ttl value outside the whitelist.
+func TestWorkerKeysCreateValidation(t *testing.T) {
+	srv, db, adminKeyID := newTestServer(t)
+	cookie := srv.issueSessionCookie(adminKeyID)
+	// Baseline token so the row-count assertion proves rejections minted
+	// nothing new rather than assuming an empty table (rows from other tests
+	// sharing the DB would otherwise flake the count).
+	var before int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM node_enrollment_tokens`).Scan(&before); err != nil {
+		t.Fatalf("baseline count: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/admin/worker-keys", strings.NewReader("node=&ttl=24h"))
+	req.Header.Set("Cookie", cookieName+"="+cookie)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := srv.App().Test(req)
+	if err != nil {
+		t.Fatalf("empty node: %v", err)
+	}
+	resp.Body.Close()
+	if loc := resp.Header.Get("Location"); loc != "/admin/worker-keys?error=node+name+is+required" {
+		t.Errorf("empty node location: got %q", loc)
+	}
+
+	req2 := httptest.NewRequest("POST", "/admin/worker-keys", strings.NewReader("node=gpu-x&ttl=forever"))
+	req2.Header.Set("Cookie", cookieName+"="+cookie)
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp2, err := srv.App().Test(req2)
+	if err != nil {
+		t.Fatalf("bad ttl: %v", err)
+	}
+	resp2.Body.Close()
+	if loc := resp2.Header.Get("Location"); loc != "/admin/worker-keys?error=unknown+expiry+choice" {
+		t.Errorf("bad ttl location: got %q", loc)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM node_enrollment_tokens`).Scan(&n); err != nil || n != before {
+		t.Errorf("rejected creates must not mint rows: got %d rows (baseline %d), err %v", n, before, err)
+	}
+}
+
+// TestWorkerKeysRevokeFlow checks that revoking from the UI flips the token
+// inactive (so the router drops the worker on its next heartbeat), records
+// an audit event with the token id, and surfaces unknown ids safely.
+func TestWorkerKeysRevokeFlow(t *testing.T) {
+	srv, db, adminKeyID := newTestServer(t)
+	cookie := srv.issueSessionCookie(adminKeyID)
+	signer := auth.NewRandomSigner()
+	repo := auth.NewEnrollmentRepo(db, signer)
+	et, _, err := repo.Create(context.Background(), "gpu-victim", 0)
+	if err != nil {
+		t.Fatalf("create victim: %v", err)
+	}
+	if ok, err := repo.IsActive(context.Background(), et.ID); err != nil || !ok {
+		t.Fatalf("precondition: fresh token active: %v, %v", ok, err)
+	}
+
+	req := httptest.NewRequest("POST", "/admin/worker-keys/"+et.ID+"/revoke", nil)
+	req.Header.Set("Cookie", cookieName+"="+cookie)
+	resp, err := srv.App().Test(req)
+	if err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/admin/worker-keys" {
+		t.Errorf("revoke: got %d (location %q), want 303 to /admin/worker-keys", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if ok, err := repo.IsActive(context.Background(), et.ID); err != nil || ok {
+		t.Errorf("revoked token IsActive: got %v, %v; want false, nil", ok, err)
+	}
+	var detail string
+	if err := db.QueryRow(`SELECT detail FROM admin_audit_logs WHERE event = 'enrollment_revoked'`).Scan(&detail); err != nil || detail != et.ID {
+		t.Errorf("enrollment_revoked audit rows: got detail %q, err %v; want %q", detail, err, et.ID)
+	}
+
+	// Unknown id: redirected back with an error flash, no audit row.
+	req2 := httptest.NewRequest("POST", "/admin/worker-keys/nope/revoke", nil)
+	req2.Header.Set("Cookie", cookieName+"="+cookie)
+	resp2, err := srv.App().Test(req2)
+	if err != nil {
+		t.Fatalf("revoke unknown: %v", err)
+	}
+	resp2.Body.Close()
+	if loc := resp2.Header.Get("Location"); loc != "/admin/worker-keys?error=no+such+token" {
+		t.Errorf("revoke unknown location: got %q", loc)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM admin_audit_logs WHERE event = 'enrollment_revoked'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("enrollment_revoked audit rows after unknown id: got %d, err %v; want 1", n, err)
 	}
 }
 

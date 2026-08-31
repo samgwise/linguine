@@ -25,6 +25,26 @@ import (
 	"github.com/samgw/linguine/internal/fleet"
 )
 
+// workerKeyTTLChoice is one enrolment-lifetime option on the worker-keys form.
+type workerKeyTTLChoice struct {
+	Value string        // form value
+	Label string        // <option> text
+	TTL   time.Duration // 0 = no expiry
+}
+
+// workerKeyTTLs are the enrolment-lifetime choices offered on the worker-keys
+// form. A token lives exactly as long as the operator chose — the default is
+// no expiry, matching the coordinator-invite workflow; the short options are
+// there for one-off or fleet-wide batches.
+var workerKeyTTLs = []workerKeyTTLChoice{
+	{"24h", "1 day", 24 * time.Hour},
+	{"72h", "3 days", 72 * time.Hour},
+	{"168h", "7 days", 168 * time.Hour},
+	{"720h", "1 month", 720 * time.Hour},
+	{"2160h", "3 months", 2160 * time.Hour},
+	{"none", "No expiry", 0},
+}
+
 const (
 	cookieName  = "linguine_admin"
 	sessionTTL  = 12 * time.Hour
@@ -37,7 +57,10 @@ const (
 type Deps struct {
 	Keys  *auth.APIKeyRepo
 	Audit *audit.Repo
-	Nodes func() []fleet.NodeView
+	// Enrollments, when set, enables the worker-keys page for minting and
+	// revoking worker enrolment tokens from the dashboard.
+	Enrollments *auth.EnrollmentRepo
+	Nodes       func() []fleet.NodeView
 	// Claims, when set, returns rejected connection attempts (workers
 	// knocking with bad or revoked enrollment) to merge into node listings.
 	Claims        func() []fleet.NodeView
@@ -48,6 +71,7 @@ type Deps struct {
 // Server is the admin dashboard.
 type Server struct {
 	keys          *auth.APIKeyRepo
+	enrollments   *auth.EnrollmentRepo
 	audit         *audit.Repo
 	nodes         func() []fleet.NodeView
 	claims        func() []fleet.NodeView
@@ -62,6 +86,7 @@ type Server struct {
 func New(deps Deps) *Server {
 	s := &Server{
 		keys:          deps.Keys,
+		enrollments:   deps.Enrollments,
 		audit:         deps.Audit,
 		nodes:         deps.Nodes,
 		claims:        deps.Claims,
@@ -98,6 +123,10 @@ func (s *Server) registerRoutes() {
 	s.app.Post("/admin/keys", s.keysCreate)
 	s.app.Get("/admin/keys/created", s.keyCreatedPage)
 	s.app.Post("/admin/keys/:id/revoke", s.keyRevoke)
+	s.app.Get("/admin/worker-keys", s.workerKeysPage)
+	s.app.Post("/admin/worker-keys", s.workerKeysCreate)
+	s.app.Get("/admin/worker-keys/created", s.workerKeyCreatedPage)
+	s.app.Post("/admin/worker-keys/:id/revoke", s.workerKeyRevoke)
 }
 
 // cspHeader sets a strict Content-Security-Policy on admin pages. htmx is
@@ -361,6 +390,98 @@ func (s *Server) keyRevoke(c fiber.Ctx) error {
 		StatusCode: fiber.StatusOK,
 	})
 	return c.Redirect().Status(fiber.StatusSeeOther).To("/admin/keys")
+}
+
+// workerKeysPage renders the worker enrolment token management page: a mint
+// form above a table of every token. Raw tokens are shown exactly once, on the
+// single-use created page, exactly like API keys. The Enrollments dep is
+// always wired in production; a nil repo (unit tests) renders an empty list.
+func (s *Server) workerKeysPage(c fiber.Ctx) error {
+	var toks []auth.EnrollmentToken
+	if s.enrollments != nil {
+		var err error
+		toks, err = s.enrollments.List(c.Context())
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).SendString("enrollment token list query failed")
+		}
+	}
+	return c.Type("html").SendString(workerKeysPage(toks, c.Query("error", "")))
+}
+
+// workerKeysCreate mints a worker enrolment token, records the audit event,
+// and redirects to the single-use created page showing the raw PASETO once.
+// The TTL comes from a whitelist of form choices; anything else is rejected
+// with an error flash rather than silently reinterpreted.
+func (s *Server) workerKeysCreate(c fiber.Ctx) error {
+	node := strings.TrimSpace(c.FormValue("node"))
+	if node == "" {
+		return c.Redirect().Status(fiber.StatusSeeOther).To("/admin/worker-keys?error=" + url.QueryEscape("node name is required"))
+	}
+	ttl, ok := workerKeyTTL(c.FormValue("ttl"))
+	if !ok {
+		return c.Redirect().Status(fiber.StatusSeeOther).To("/admin/worker-keys?error=" + url.QueryEscape("unknown expiry choice"))
+	}
+	et, raw, err := s.enrollments.Create(c.Context(), node, ttl)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("enrollment token create failed")
+	}
+	// NB: the token id goes in Detail, not APIKeyID — that column is a real
+	// foreign key to api_keys, which an enrolment token id is not.
+	_ = s.audit.RecordAdminEvent(audit.AdminEvent{
+		Event:      "enrollment_created",
+		Detail:     et.ID + " (" + et.NodeName + ")",
+		RemoteIP:   c.IP(),
+		StatusCode: fiber.StatusOK,
+	})
+	nonce, err := s.nonces.put(raw)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("enrollment token create failed")
+	}
+	return c.Redirect().Status(fiber.StatusSeeOther).To("/admin/worker-keys/created?node=" + url.QueryEscape(et.NodeName) + "&nonce=" + url.QueryEscape(nonce))
+}
+
+// workerKeyCreatedPage shows the raw enrolment token exactly once, with a
+// paste-ready worker config snippet. Same mechanics as the API-key reveal:
+// take() deletes the nonce so refreshes and replays redirect back to the list,
+// and no-store keeps the token out of browser and proxy caches.
+func (s *Server) workerKeyCreatedPage(c fiber.Ctx) error {
+	raw, ok := s.nonces.take(c.Query("nonce"))
+	if !ok {
+		return c.Redirect().Status(fiber.StatusSeeOther).To("/admin/worker-keys")
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.Type("html").SendString(workerKeyCreatedPage(c.Query("node"), raw))
+}
+
+// workerKeyRevoke flips an enrolment token to revoked. The router's
+// per-heartbeat IsActive check drops any connected worker within one
+// heartbeat interval.
+func (s *Server) workerKeyRevoke(c fiber.Ctx) error {
+	id := c.Params("id")
+	if err := s.enrollments.Revoke(c.Context(), id); err != nil {
+		return c.Redirect().Status(fiber.StatusSeeOther).To("/admin/worker-keys?error=" + url.QueryEscape("no such token"))
+	}
+	_ = s.audit.RecordAdminEvent(audit.AdminEvent{
+		Event:      "enrollment_revoked",
+		Detail:     id,
+		RemoteIP:   c.IP(),
+		StatusCode: fiber.StatusOK,
+	})
+	return c.Redirect().Status(fiber.StatusSeeOther).To("/admin/worker-keys")
+}
+
+// workerKeyTTL resolves a form choice to its lifetime. An empty value selects
+// the default (no expiry). ok is false for anything outside the whitelist.
+func workerKeyTTL(v string) (time.Duration, bool) {
+	if v == "" {
+		v = "none"
+	}
+	for _, t := range workerKeyTTLs {
+		if t.Value == v {
+			return t.TTL, true
+		}
+	}
+	return 0, false
 }
 
 // issueSessionCookie returns `keyID|expiresUnix|hmac` for the given admin
