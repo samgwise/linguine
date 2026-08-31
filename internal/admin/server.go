@@ -35,9 +35,12 @@ const (
 
 // Deps holds the admin dashboard's external dependencies.
 type Deps struct {
-	Keys          *auth.APIKeyRepo
-	Audit         *audit.Repo
-	Nodes         func() []fleet.NodeView
+	Keys  *auth.APIKeyRepo
+	Audit *audit.Repo
+	Nodes func() []fleet.NodeView
+	// Claims, when set, returns rejected connection attempts (workers
+	// knocking with bad or revoked enrollment) to merge into node listings.
+	Claims        func() []fleet.NodeView
 	Listen        string
 	SessionSecret []byte // HMAC key for the session cookie
 }
@@ -47,6 +50,7 @@ type Server struct {
 	keys          *auth.APIKeyRepo
 	audit         *audit.Repo
 	nodes         func() []fleet.NodeView
+	claims        func() []fleet.NodeView
 	app           *fiber.App
 	listen        string
 	sessionSecret []byte
@@ -60,6 +64,7 @@ func New(deps Deps) *Server {
 		keys:          deps.Keys,
 		audit:         deps.Audit,
 		nodes:         deps.Nodes,
+		claims:        deps.Claims,
 		listen:        deps.Listen,
 		sessionSecret: deps.SessionSecret,
 		app:           fiber.New(),
@@ -218,8 +223,29 @@ func (s *Server) logout(c fiber.Ctx) error {
 	return c.Redirect().Status(fiber.StatusSeeOther).To("/admin/login")
 }
 
-func (s *Server) home(c fiber.Ctx) error {
+// fleetView merges registered nodes with unauthenticated connection claims
+// (nodes that are visible but nil-registered, e.g. bad or revoked token),
+// giving operators one table that shows every machine trying to join. When
+// no Claims func is wired (e.g. tests), only registered nodes appear.
+func (s *Server) fleetView() []fleet.NodeView {
 	nodes := s.nodes()
+	if s.claims == nil {
+		return nodes
+	}
+	registered := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		registered[n.ID] = true
+	}
+	for _, c := range s.claims() {
+		if !registered[c.ID] {
+			nodes = append(nodes, c)
+		}
+	}
+	return nodes
+}
+
+func (s *Server) home(c fiber.Ctx) error {
+	nodes := s.fleetView()
 	online := 0
 	for _, n := range nodes {
 		if n.Status == "online" {
@@ -242,14 +268,14 @@ func (s *Server) nodesPage(c fiber.Ctx) error {
 		// The table polls itself every 5s with hx-swap="outerHTML"; returning
 		// the full page here would nest page chrome inside the table on every
 		// refresh.
-		return c.Type("html").SendString(nodesFragment(s.nodes()))
+		return c.Type("html").SendString(nodesFragment(s.fleetView()))
 	}
-	return c.Type("html").SendString(nodesPage(s.nodes()))
+	return c.Type("html").SendString(nodesPage(s.fleetView()))
 }
 
 func (s *Server) nodeDetailPage(c fiber.Ctx) error {
 	id := c.Params("id")
-	for _, n := range s.nodes() {
+	for _, n := range s.fleetView() {
 		if n.ID == id {
 			return c.Type("html").SendString(nodeDetailPage(n))
 		}

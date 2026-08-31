@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/url"
+	"time"
 
 	"go.nanomsg.org/mangos/v3"
 	"go.nanomsg.org/mangos/v3/protocol/xrep"
@@ -32,6 +33,13 @@ import (
 // pipe. The router learns each worker's PipeID from that worker's heartbeat
 // and uses it to target dispatches.
 type PipeID uint32
+
+// Reconnect backoff bounds for worker dialers: mangos redials automatically
+// after a lost pipe; these cap the retry rate between 1s and 30s.
+var (
+	reconnectMin = 1 * time.Second
+	reconnectMax = 30 * time.Second
+)
 
 // backtraceToken is a fixed 4-byte mangos request-id whose high bit is set
 // (0x80000000). mangos raw req/rep uses a backtrace protocol: the receiver
@@ -118,7 +126,10 @@ type Worker struct {
 	sock mangos.Socket
 }
 
-// NewWorker creates an xreq worker socket with a 2-second receive deadline.
+// NewWorker creates an xreq worker socket with a 2-second receive deadline
+// and exponential reconnect backoff (1s initial, 30s cap). mangos redials
+// automatically when the connection drops; the backoff bounds the retry rate
+// so a flapping router doesn't turn into a dial storm.
 func NewWorker() (*Worker, error) {
 	sock, err := xreq.NewSocket()
 	if err != nil {
@@ -127,6 +138,14 @@ func NewWorker() (*Worker, error) {
 	if err := sock.SetOption(mangos.OptionRecvDeadline, recvDeadline); err != nil {
 		_ = sock.Close()
 		return nil, fmt.Errorf("mesh: set recv deadline: %w", err)
+	}
+	if err := sock.SetOption(mangos.OptionReconnectTime, reconnectMin); err != nil {
+		_ = sock.Close()
+		return nil, fmt.Errorf("mesh: set reconnect time: %w", err)
+	}
+	if err := sock.SetOption(mangos.OptionMaxReconnectTime, reconnectMax); err != nil {
+		_ = sock.Close()
+		return nil, fmt.Errorf("mesh: set max reconnect time: %w", err)
 	}
 	return &Worker{sock: sock}, nil
 }

@@ -151,6 +151,7 @@ func serve(configPath string) error {
 		Keys:          auth.NewAPIKeyRepo(st.DB()),
 		Audit:         auditRepo,
 		Nodes:         srv.NodesSnapshot,
+		Claims:        srv.ClaimsSnapshot,
 		Listen:        cfg.Admin.Listen,
 		SessionSecret: secret,
 	})

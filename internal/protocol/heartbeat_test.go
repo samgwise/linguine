@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -46,6 +47,69 @@ func TestHeartbeatJSONRoundTrip(t *testing.T) {
 	}
 	if got.EstimatedTPS != hb.EstimatedTPS {
 		t.Errorf("estimated_tps: got %v want %v", got.EstimatedTPS, hb.EstimatedTPS)
+	}
+}
+
+func TestHeartbeatAckJSONRoundTrip(t *testing.T) {
+	ack := HeartbeatAck{
+		OK:     true,
+		NodeID: "node-gpu-sydney",
+	}
+	data, err := json.Marshal(ack)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got HeartbeatAck
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !got.OK || got.NodeID != ack.NodeID || got.Reason != "" || got.Detail != "" {
+		t.Errorf("accept ack round-trip mismatch: %+v", got)
+	}
+
+	rej := HeartbeatAck{
+		OK:     false,
+		Reason: AckReasonAuthFailed,
+		Detail: "verify enrollment token: bad signature",
+	}
+	data, err = json.Marshal(rej)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got = HeartbeatAck{}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.OK || got.Reason != AckReasonAuthFailed || got.Detail != rej.Detail {
+		t.Errorf("reject ack round-trip mismatch: %+v", got)
+	}
+}
+
+func TestHeartbeatConnectionStateRoundTrip(t *testing.T) {
+	hb := Heartbeat{
+		NodeID:          "node-x",
+		EnrollmentToken: "tok",
+		ConnectionState: ConnStateDegraded,
+	}
+	data, err := json.Marshal(hb)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"connection_state":"degraded"`) {
+		t.Errorf("connection_state missing from wire format: %s", data)
+	}
+	var got Heartbeat
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ConnectionState != ConnStateDegraded {
+		t.Errorf("connection_state: got %q want %q", got.ConnectionState, ConnStateDegraded)
+	}
+	// An empty state (older worker) must serialise away entirely.
+	hb.ConnectionState = ""
+	data, _ = json.Marshal(hb)
+	if strings.Contains(string(data), "connection_state") {
+		t.Errorf("empty connection_state should be omitted: %s", data)
 	}
 }
 

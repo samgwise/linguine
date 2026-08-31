@@ -8,8 +8,16 @@ import "time"
 // dashboard. It carries the live telemetry the router's node registry holds
 // in-memory.
 type NodeView struct {
-	ID             string
-	Status         string
+	ID string
+	// Status is the router's rollup for display: online, stale, degraded, or
+	// connecting (a rejected/unacknowledged connection attempt).
+	Status string
+	// ConnectionState is the worker's self-reported state (connecting/
+	// registered/degraded); empty for claims and pre-ack workers.
+	ConnectionState string
+	// ClaimReason is set only for connection claims (rejected attempts):
+	// auth_failed, inactive, or internal.
+	ClaimReason    string
 	ActiveModel    string
 	Catalog        []string
 	VRAMTotalMB    uint64

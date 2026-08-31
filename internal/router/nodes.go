@@ -8,6 +8,7 @@ import (
 
 	"github.com/samgw/linguine/internal/fleet"
 	"github.com/samgw/linguine/internal/mesh"
+	"github.com/samgw/linguine/internal/protocol"
 )
 
 // nodeEntry is a connected worker's last-known state. Volatile telemetry
@@ -15,11 +16,14 @@ import (
 // last_heartbeat persist to the nodes table so the dashboard has last-known
 // state after a router restart.
 type nodeEntry struct {
-	id          string
-	tokenID     string
-	pipe        mesh.PipeID
-	activeModel string
-	catalog     []string
+	id      string
+	tokenID string
+	pipe    mesh.PipeID
+	// connectionState is the worker's self-reported state from its latest
+	// heartbeat (connecting/registered/degraded; empty from older workers).
+	connectionState string
+	activeModel     string
+	catalog         []string
 
 	// Volatile telemetry — in-memory only.
 	vramTotalMB         uint64
@@ -34,7 +38,26 @@ type nodeEntry struct {
 	syncedCatalog []string // last catalog written to node_model_catalogs
 }
 
-// nodeRegistry tracks online workers by node id and NNG pipe. Selection is
+// claimEntry is a rejected-but-persisting connection attempt: a worker whose
+// heartbeats are being refused (bad token, revoked enrollment, router-side
+// lookup failure). Claims are in-memory only — this is unauthenticated,
+// worker-supplied data and must never reach SQLite — and expire shortly
+// after the worker stops knocking so the dashboard doesn't fill with ghosts.
+type claimEntry struct {
+	nodeID      string
+	pipe        mesh.PipeID
+	reason      string
+	detail      string
+	lastAttempt time.Time
+}
+
+const (
+	claimMaxEntries = 64 // cap against a flood of bogus claims
+	claimExpiry     = 60 * time.Second
+)
+
+// nodeRegistry tracks online workers by node id and NNG pipe, plus a
+// side-table of unauthenticated connection attempts (claims). Selection is
 // least-connections (smallest active_requests, tie-break by insertion order)
 // — the direct stepping stone to the cost-aware scorer in Phase 1b.
 type nodeRegistry struct {
@@ -42,6 +65,7 @@ type nodeRegistry struct {
 	byID       map[string]*nodeEntry
 	byPipe     map[mesh.PipeID]*nodeEntry
 	order      []string
+	claims     map[string]*claimEntry
 	staleAfter time.Duration
 	db         *sql.DB
 }
@@ -50,9 +74,61 @@ func newNodeRegistry(staleAfter time.Duration, db *sql.DB) *nodeRegistry {
 	return &nodeRegistry{
 		byID:       make(map[string]*nodeEntry),
 		byPipe:     make(map[mesh.PipeID]*nodeEntry),
+		claims:     make(map[string]*claimEntry),
 		staleAfter: staleAfter,
 		db:         db,
 	}
+}
+
+// recordClaim notes a rejected heartbeat so operators can see a worker that
+// is trying (and failing) to connect. Claims expire silently; a worker whose
+// enrollment succeeds later simply disappears from the claims view when it
+// registers as a node.
+func (r *nodeRegistry) recordClaim(nodeID, reason, detail string, pipe mesh.PipeID) {
+	if nodeID == "" {
+		return // nothing identifiable to claim under
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Expire stale claims opportunistically, then evict the oldest if the
+	// table is full (a flood of bogus node names must not grow it).
+	now := time.Now()
+	for id, c := range r.claims {
+		if now.Sub(c.lastAttempt) > claimExpiry {
+			delete(r.claims, id)
+		}
+	}
+	if _, exists := r.claims[nodeID]; !exists && len(r.claims) >= claimMaxEntries {
+		oldestID := ""
+		var oldest time.Time
+		for id, c := range r.claims {
+			if oldestID == "" || c.lastAttempt.Before(oldest) {
+				oldestID, oldest = id, c.lastAttempt
+			}
+		}
+		delete(r.claims, oldestID)
+	}
+	r.claims[nodeID] = &claimEntry{
+		nodeID:      nodeID,
+		pipe:        pipe,
+		reason:      reason,
+		detail:      detail,
+		lastAttempt: now,
+	}
+}
+
+// ClaimsSnapshot returns the current connection claims for the dashboard.
+func (r *nodeRegistry) ClaimsSnapshot() []claimEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	out := make([]claimEntry, 0, len(r.claims))
+	for _, c := range r.claims {
+		if now.Sub(c.lastAttempt) <= claimExpiry {
+			out = append(out, *c)
+		}
+	}
+	return out
 }
 
 // upsert inserts or refreshes a node, keeping the id<->pipe mappings in sync,
@@ -62,6 +138,8 @@ func newNodeRegistry(staleAfter time.Duration, db *sql.DB) *nodeRegistry {
 // small fleet; the /v1 hot path (audit logging) is what must stay async.
 func (r *nodeRegistry) upsert(e *nodeEntry) {
 	r.mu.Lock()
+	// A successful registration retires any outstanding claim for this node.
+	delete(r.claims, e.id)
 	// If a pipe is now used by a different node id, retire the old id.
 	if old, ok := r.byPipe[e.pipe]; ok && old.id != e.id {
 		delete(r.byID, old.id)
@@ -189,19 +267,44 @@ func (s *Server) NodesSnapshot() []fleet.NodeView {
 	for _, e := range entries {
 		stale := time.Since(e.lastSeen) <= s.nodes.staleAfter
 		status := "online"
-		if !stale {
+		switch {
+		case !stale:
 			status = "stale"
+		case e.connectionState == protocol.ConnStateDegraded:
+			// The worker itself reports ack silence; surface it above a
+			// plain online so operators see the degradation.
+			status = "degraded"
 		}
 		out = append(out, fleet.NodeView{
-			ID:             e.id,
-			Status:         status,
-			ActiveModel:    e.activeModel,
-			Catalog:        e.catalog,
-			VRAMTotalMB:    e.vramTotalMB,
-			VRAMFreeMB:     e.vramFreeMB,
-			ActiveRequests: e.activeRequests,
-			EstimatedTPS:   e.estimatedTPS,
-			LastHeartbeat:  e.lastSeen,
+			ID:              e.id,
+			Status:          status,
+			ConnectionState: e.connectionState,
+			ActiveModel:     e.activeModel,
+			Catalog:         e.catalog,
+			VRAMTotalMB:     e.vramTotalMB,
+			VRAMFreeMB:      e.vramFreeMB,
+			ActiveRequests:  e.activeRequests,
+			EstimatedTPS:    e.estimatedTPS,
+			LastHeartbeat:   e.lastSeen,
+		})
+	}
+	return out
+}
+
+// ClaimsSnapshot returns a public view of rejected connection attempts
+// (workers knocking with invalid, revoked, or unverifiable enrollment). The
+// router tracks these in memory only; they expire shortly after the worker
+// stops trying.
+func (s *Server) ClaimsSnapshot() []fleet.NodeView {
+	claims := s.nodes.ClaimsSnapshot()
+	out := make([]fleet.NodeView, 0, len(claims))
+	for _, c := range claims {
+		out = append(out, fleet.NodeView{
+			ID:              c.nodeID,
+			Status:          "connecting",
+			ConnectionState: protocol.ConnStateConnecting,
+			ClaimReason:     c.reason,
+			LastHeartbeat:   c.lastAttempt,
 		})
 	}
 	return out

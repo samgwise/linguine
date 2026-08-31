@@ -27,6 +27,9 @@ var funcMap = template.FuncMap{
 	"lower":   strings.ToLower,
 	"orDash":  orDash,
 	"shortID": shortID,
+	// statusLabel appends a claim's rejection reason to the status badge
+	// text (e.g. "connecting (auth_failed)").
+	"statusLabel": statusLabel,
 }
 
 // baseSource is the shared page chrome. Each page defines a "content" block
@@ -55,6 +58,8 @@ td { font-variant-numeric: tabular-nums; }
 .status { padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
 .status.online { background: #dafbe1; color: #1a7f37; }
 .status.stale { background: #fff8c5; color: #9a6700; }
+.status.degraded { background: #fff8c5; color: #9a6700; }
+.status.connecting { background: #ddf4ff; color: #0969da; }
 .status.offline { background: #ffebe9; color: #cf222e; }
 .status.active { background: #dafbe1; color: #1a7f37; }
 .status.revoked { background: #ffebe9; color: #cf222e; }
@@ -175,6 +180,15 @@ func nodeDetailPage(n fleet.NodeView) string {
 	return renderPage(nodeDetailTmpl, nodeDetailData{pageData: pageData{Title: n.ID}, N: n})
 }
 
+// statusLabel renders a NodeView's status, appending the rejection reason
+// for connection claims (e.g. "connecting (auth_failed)").
+func statusLabel(n fleet.NodeView) string {
+	if n.ClaimReason == "" {
+		return n.Status
+	}
+	return n.Status + " (" + n.ClaimReason + ")"
+}
+
 // keysData carries the key list plus an optional error flash (e.g. a
 // rejected revoke or missing name) shown at the top of the page.
 type keysData struct {
@@ -249,7 +263,7 @@ const homeSource = `{{define "content"}}
 <tr><td colspan="5" class="muted">No workers enrolled.</td></tr>
 {{- end}}
 {{range .Nodes}}
-<tr><td><a href="/admin/nodes/{{.ID}}">{{.ID}}</a></td><td><span class="status {{.Status | lower}}">{{.Status}}</span></td><td>{{.ActiveModel | orDash}}</td><td>{{.ActiveRequests}}</td><td>{{.LastHeartbeat | fmtTime}}</td></tr>
+<tr><td><a href="/admin/nodes/{{.ID}}">{{.ID}}</a></td><td><span class="status {{.Status | lower}}">{{statusLabel .}}</span></td><td>{{.ActiveModel | orDash}}</td><td>{{.ActiveRequests}}</td><td>{{.LastHeartbeat | fmtTime}}</td></tr>
 {{- end}}
 </tbody></table>
 {{end}}`
@@ -262,7 +276,7 @@ const nodesTableSource = `{{define "nodes_table"}}
 <tr><td colspan="8" class="muted">No workers enrolled.</td></tr>
 {{- end}}
 {{range .Nodes}}
-<tr><td><a href="/admin/nodes/{{.ID}}">{{.ID}}</a></td><td><span class="status {{.Status | lower}}">{{.Status}}</span></td><td>{{.ActiveModel | orDash}}</td><td>{{.VRAMFreeMB}} / {{.VRAMTotalMB}}</td><td>{{.ActiveRequests}}</td><td>{{printf "%.1f" .EstimatedTPS}}</td><td>{{.Catalog | join}}</td><td>{{.LastHeartbeat | fmtTime}}</td></tr>
+<tr><td><a href="/admin/nodes/{{.ID}}">{{.ID}}</a></td><td><span class="status {{.Status | lower}}">{{statusLabel .}}</span></td><td>{{.ActiveModel | orDash}}</td><td>{{.VRAMFreeMB}} / {{.VRAMTotalMB}}</td><td>{{.ActiveRequests}}</td><td>{{printf "%.1f" .EstimatedTPS}}</td><td>{{.Catalog | join}}</td><td>{{.LastHeartbeat | fmtTime}}</td></tr>
 {{- end}}
 </tbody></table>
 {{end}}`

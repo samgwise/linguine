@@ -72,7 +72,10 @@ func main() {
 			log.Printf("[linguine] daemon: %v", err)
 		}
 	}()
-	log.Printf("[linguine] worker %s (version %s) connected to router %s, proxying to %s", cfg.NodeID, version, cfg.Router.NNGAddr, cfg.Engine.URL)
+	// Registration (not merely a dial) is what "connected" means; the
+	// daemon logs "registered with router" once the first heartbeat ack
+	// lands, so nothing is claimed here beyond intent.
+	log.Printf("[linguine] worker %s (version %s) starting, dialling router %s, proxying to %s", cfg.NodeID, version, cfg.Router.NNGAddr, cfg.Engine.URL)
 
 	<-ctx.Done()
 	log.Printf("[linguine] worker shutting down...")

@@ -189,29 +189,44 @@ func (s *Server) handleMeshMessage(msg *mangos.Message) {
 	}
 }
 
+// handleHeartbeat verifies an inbound heartbeat and replies to the sending
+// pipe with a HeartbeatAck on every path — success or rejection — so a worker
+// can tell the difference between "registered" and "silently ignored".
+// Rejected claims are recorded (in memory only) so the dashboard can surface
+// workers that are trying to connect but failing auth.
 func (s *Server) handleHeartbeat(pipe mesh.PipeID, env *protocol.Envelope) {
 	var hb protocol.Heartbeat
 	if err := json.Unmarshal(env.Payload, &hb); err != nil {
+		// A malformed heartbeat has no trustworthy node name to claim under.
+		log.Printf("[router] malformed heartbeat from pipe %d: %v", pipe, err)
+		s.sendAck(pipe, &protocol.HeartbeatAck{Reason: protocol.AckReasonAuthFailed, Detail: "malformed heartbeat"})
 		return
 	}
 	enr, err := s.signer.Parse(hb.EnrollmentToken)
 	if err != nil {
 		log.Printf("[router] heartbeat auth failed from pipe %d: %v", pipe, err)
+		s.nodes.recordClaim(hb.NodeID, protocol.AckReasonAuthFailed, err.Error(), pipe)
+		s.sendAck(pipe, &protocol.HeartbeatAck{Reason: protocol.AckReasonAuthFailed, Detail: err.Error()})
 		return
 	}
 	active, err := s.enrollments.IsActive(context.Background(), enr.ID)
 	if err != nil {
 		log.Printf("[router] enrollment check: %v", err)
+		s.nodes.recordClaim(enr.NodeName, protocol.AckReasonInternal, err.Error(), pipe)
+		s.sendAck(pipe, &protocol.HeartbeatAck{Reason: protocol.AckReasonInternal, Detail: "enrollment lookup failed"})
 		return
 	}
 	if !active {
-		log.Printf("[router] enrollment %s not active", enr.ID)
+		log.Printf("[router] enrollment %s (%s) not active", enr.ID, enr.NodeName)
+		s.nodes.recordClaim(enr.NodeName, protocol.AckReasonInactive, "enrollment revoked or expired", pipe)
+		s.sendAck(pipe, &protocol.HeartbeatAck{Reason: protocol.AckReasonInactive, Detail: "enrollment revoked or expired"})
 		return
 	}
 	s.nodes.upsert(&nodeEntry{
 		id:                  enr.NodeName,
 		tokenID:             enr.ID,
 		pipe:                pipe,
+		connectionState:     hb.ConnectionState,
 		activeModel:         hb.ActiveModel,
 		catalog:             hb.Catalog,
 		vramTotalMB:         hb.VRAMTotalMB,
@@ -223,6 +238,20 @@ func (s *Server) handleHeartbeat(pipe mesh.PipeID, env *protocol.Envelope) {
 		pinnedSessions:      hb.PinnedSessions,
 		lastSeen:            time.Now(),
 	})
+	s.sendAck(pipe, &protocol.HeartbeatAck{OK: true, NodeID: enr.NodeName})
+}
+
+// sendAck replies to a heartbeat on the pipe it arrived on. Delivery is
+// best-effort: the worker's own ack-timeout path handles a lost reply.
+func (s *Server) sendAck(pipe mesh.PipeID, ack *protocol.HeartbeatAck) {
+	payload, err := json.Marshal(ack)
+	if err != nil {
+		return
+	}
+	env := &protocol.Envelope{ReqID: protocol.HeartbeatAckReqID, Payload: payload}
+	if err := s.nng.SendTo(pipe, env.Encode()); err != nil {
+		log.Printf("[router] send heartbeat ack to pipe %d: %v", pipe, err)
+	}
 }
 
 func (s *Server) handleChatCompletions(c fiber.Ctx) error {

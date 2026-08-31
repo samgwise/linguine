@@ -37,6 +37,7 @@ type testHarness struct {
 	enrollments *auth.EnrollmentRepo
 	db          *sql.DB
 	key         string // raw API key
+	nng         *mesh.Router
 	nngAddr     string
 }
 
@@ -80,7 +81,7 @@ func setup(t *testing.T, staleAfter time.Duration) *testHarness {
 	}
 	return &testHarness{
 		server: srv, signer: signer, keys: keys, enrollments: enrollments, db: db,
-		key: raw, nngAddr: addr,
+		key: raw, nng: nng, nngAddr: addr,
 	}
 }
 
