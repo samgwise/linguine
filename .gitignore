@@ -19,6 +19,9 @@ linguine-admin.key
 # Local runtime logs
 worker-test*.log
 
+# any testing configs
+*.toml
+
 # Editor / OS cruft
 .vscode/
 .idea/
