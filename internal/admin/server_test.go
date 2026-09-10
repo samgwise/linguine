@@ -349,6 +349,12 @@ func TestKeysCreateFlow(t *testing.T) {
 	if strings.Count(string(body2), m) != 1 {
 		t.Error("created page should reveal the raw key exactly once")
 	}
+	if !strings.Contains(string(body2), `<button type="button" data-copy="#key-reveal">`) {
+		t.Error("created page should offer a copy-to-clipboard button")
+	}
+	if !strings.Contains(string(body2), `src="/admin/static/copy.js"`) {
+		t.Error("created page should load the clipboard helper script")
+	}
 
 	// Replay: same URL reveals nothing.
 	req3 := httptest.NewRequest("GET", loc, nil)
@@ -713,6 +719,32 @@ func TestPagesServeTextHTML(t *testing.T) {
 	}
 }
 
+// TestStaticScriptsServed asserts the vendored scripts are served with a
+// JavaScript content type without a session (the login page loads htmx from
+// head, and the routes are registered outside the session guard). copy.js
+// backs the key-reveal copy buttons.
+func TestStaticScriptsServed(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	for _, path := range []string{"/admin/static/htmx.min.js", "/admin/static/copy.js"} {
+		req := httptest.NewRequest("GET", path, nil)
+		resp, err := srv.App().Test(req)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("%s status: got %d, want %d", path, resp.StatusCode, http.StatusOK)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/javascript") {
+			t.Errorf("%s Content-Type: got %q, want application/javascript", path, ct)
+		}
+		if len(body) == 0 {
+			t.Errorf("%s served an empty body", path)
+		}
+	}
+}
+
 // TestWorkerKeysPageRequiresSession asserts the worker-keys page sits behind
 // the session guard like every other dashboard page.
 func TestWorkerKeysPageRequiresSession(t *testing.T) {
@@ -782,6 +814,9 @@ func TestWorkerKeysCreateFlow(t *testing.T) {
 	}
 	if !strings.Contains(string(body2), `enrollment_token = "`) {
 		t.Error("created page should show a config snippet with the token slot")
+	}
+	if !strings.Contains(string(body2), `<button type="button" data-copy="#key-reveal">`) {
+		t.Error("created page should offer a copy-to-clipboard button")
 	}
 
 	// Replay: same URL reveals nothing.

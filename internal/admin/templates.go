@@ -46,6 +46,7 @@ const baseSource = `{{define "base"}}<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>{{.Title}} — linguine admin</title>
 <script src="/admin/static/htmx.min.js"></script>
+<script src="/admin/static/copy.js" defer></script>
 <style>
 body { font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; color: #1f2328; background: #f6f8fa; }
 header { background: #24292f; color: #fff; padding: 12px 24px; display: flex; gap: 20px; align-items: center; }
@@ -390,7 +391,8 @@ const keysSource = `{{define "content"}}
 const keyCreatedSource = `{{define "content"}}
 <h1>Key created</h1>
 <p>Store this key securely now — it is shown <strong>only this once</strong> and cannot be retrieved again.</p>
-<div class="key-reveal">{{.RawKey}}</div>
+<div class="key-reveal" id="key-reveal">{{.RawKey}}</div>
+<button type="button" data-copy="#key-reveal">Copy key to clipboard</button>
 <p><a href="/admin/keys">Back to API keys</a></p>
 {{end}}`
 
@@ -423,7 +425,8 @@ const workerKeysSource = `{{define "content"}}
 const workerKeyCreatedSource = `{{define "content"}}
 <h1>Worker key created</h1>
 <p>Enrolment token for <strong>{{.NodeName}}</strong>. Store it securely now — it is shown <strong>only this once</strong> and cannot be retrieved again.</p>
-<div class="key-reveal">{{.RawToken}}</div>
+<div class="key-reveal" id="key-reveal">{{.RawToken}}</div>
+<button type="button" data-copy="#key-reveal">Copy token to clipboard</button>
 <h2>Worker config</h2>
 <p class="muted">Paste into the worker's TOML, set <code>router.nng_addr</code> to this router's mesh address, then start the worker:</p>
 <pre class="snippet">node_id = "{{.NodeName}}"

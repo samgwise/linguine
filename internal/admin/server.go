@@ -106,7 +106,8 @@ func (s *Server) App() *fiber.App { return s.app }
 func (s *Server) registerRoutes() {
 	// Static assets sit outside the session guard so the login page can load
 	// htmx before authentication.
-	s.app.Get("/admin/static/htmx.min.js", s.staticHtmx)
+	s.app.Get("/admin/static/htmx.min.js", s.staticJS("htmx.min.js", true))
+	s.app.Get("/admin/static/copy.js", s.staticJS("copy.js", false))
 	// The Content-Security-Policy header is applied to every admin response,
 	// including the login page, so script execution is constrained regardless
 	// of session state.
